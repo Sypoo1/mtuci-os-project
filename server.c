@@ -41,6 +41,13 @@ int main(int argc, char **argv)
 
     check((server_socket = socket(AF_INET, SOCK_STREAM, 0)),
             "Failed to create a socket");
+    
+    // Set SO_REUSEADDR option
+    int opt = 1;
+    if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt(SO_REUSEADDR) failed");
+        exit(EXIT_FAILURE);
+    }
 
     // initialize the address struct
     server_addr.sin_family = AF_INET;
@@ -95,10 +102,10 @@ void * thread_function(void *arg){
         }
         pthread_mutex_unlock(&mutex);
 
-            handle_connection(pclient);
-        }
+        handle_connection(pclient);
     }
 }
+
 
 
 
