@@ -63,11 +63,6 @@ int main(int argc, char **argv)
                 "accept failed");
         printf("Connected!\n");
 
-
-
-
-
-
         int *pclient = malloc(sizeof(int));
         *pclient = client_socket;
 
@@ -76,47 +71,39 @@ int main(int argc, char **argv)
         enqueue(pclient);
         pthread_cond_signal(&condition_var);
         pthread_mutex_unlock(&mutex);
-
-
-
     }
 
     return 0;
+}
 
-
-    int check(int exp, const char *msg){
-        if (exp == SOCKETERROR){
-            perror(msg);
-            exit(1);
-        }
-        return exp;
+int check(int exp, const char *msg){
+    if (exp == SOCKETERROR){
+        perror(msg);
+        exit(1);
     }
+    return exp;
+}
 
-    void * thread_function(void *arg){
-        while (true){
-            int *pclient;
-            pthread_mutex_lock(&mutex);
-            if ((pclient = dequeue()) == NULL){
-                pthread_cond_wait(&condition_var, &mutex);
-                // try again
-                pclient = dequeue();
-            }
-            pthread_mutex_unlock(&mutex);
+void * thread_function(void *arg){
+    while (true){
+        int *pclient;
+        pthread_mutex_lock(&mutex);
+        if ((pclient = dequeue()) == NULL){
+            pthread_cond_wait(&condition_var, &mutex);
+            // try again
+            pclient = dequeue();
+        }
+        pthread_mutex_unlock(&mutex);
 
             handle_connection(pclient);
-
-            // if (pclient != NULL){
-
-            //     handle_connection(pclient);
-            // }
         }
     }
 }
 
 
+
 void * handle_connection(void* p_client_socket){
     int client_socket = *((int*)p_client_socket);
-    // free(p_client_socket);
     char buffer[BUFFSIZE];
     size_t bytes_read;
     int msgsize = 0;
@@ -148,7 +135,6 @@ void * handle_connection(void* p_client_socket){
         return NULL;
     }
 
-    sleep(1); //just do nothing
 
     while((bytes_read = fread(buffer, 1, BUFFSIZE, fp)) > 0){
         printf("sending %zu bytes\n", bytes_read);
