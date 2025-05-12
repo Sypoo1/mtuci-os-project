@@ -44,10 +44,8 @@ int main(int argc, char **argv)
     
     // Set SO_REUSEADDR option
     int opt = 1;
-    if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        perror("setsockopt(SO_REUSEADDR) failed");
-        exit(EXIT_FAILURE);
-    }
+    check(setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)),
+      "setsockopt(SO_REUSEADDR) failed");
 
     // initialize the address struct
     server_addr.sin_family = AF_INET;
