@@ -106,40 +106,60 @@ int main(int argc, char** argv) {
     return 0;
 }
 
-int server_loop(void) {
-    server_sock = check(socket(AF_INET, SOCK_STREAM, 0), "socket");
-    int opt = 1;
-    check(setsockopt(server_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)), "setsockopt");
 
-    SA_IN server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(SERVERPORT);
-    check(bind(server_sock, (SA*)&server_addr, sizeof(server_addr)), "bind");
-    check(listen(server_sock, SERVERBACKLOG), "listen");
 
-    // Start thread pool
-    for (int i = 0; i < THREAD_POOL_SIZE; i++) {
+int server_loop(void)
+{
+    int server_socket, client_socket, addr_size;
+    SA_IN server_addr, client_addr;
+
+    // create a banch of threads to handle connections
+    for(int i = 0; i < THREAD_POOL_SIZE; i++){
         pthread_create(&thread_pool[i], NULL, thread_function, NULL);
     }
 
-    // Accept loop
-    while (1) {
+    check((server_socket = socket(AF_INET, SOCK_STREAM, 0)),
+            "Failed to create a socket");
+    
+    // Set SO_REUSEADDR option
+    int opt = 1;
+    check(setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)),
+      "setsockopt(SO_REUSEADDR) failed");
+
+    // initialize the address struct
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(SERVERPORT);
+
+    check(bind(server_socket, (SA*)&server_addr, sizeof(server_addr)),
+            "Bind Failed!");
+    check(listen(server_socket, SERVERBACKLOG),
+            "Listen Failed!");
+
+
+    while(true){
+
         printf("Waiting for connections...\n");
-        SA_IN client_addr;
-        socklen_t addr_size = sizeof(client_addr);
-        int client_socket = check(accept(server_sock, (SA*)&client_addr, &addr_size), "accept");
-        int* pclient = malloc(sizeof(int));
+        // wait for, and eventually accept any incoming connections
+        addr_size = sizeof(SA_IN);
+        check(client_socket =
+                accept(server_socket, (SA*)&client_addr, (socklen_t*)&addr_size),
+                "accept failed");
+        printf("Connected!\n");
+
+        int *pclient = malloc(sizeof(int));
         *pclient = client_socket;
+
+        //make sure only one thread messes with queue
         pthread_mutex_lock(&mutex);
         enqueue(pclient);
         pthread_cond_signal(&condition_var);
         pthread_mutex_unlock(&mutex);
     }
+
     return 0;
 }
-
+//---------------------------------------------------------------------------------------------------------------------
 int check(int exp, const char* msg) {
     if (exp == SOCKETERROR) {
         perror(msg);
@@ -148,22 +168,24 @@ int check(int exp, const char* msg) {
     return exp;
 }
 
-void* thread_function(void* arg) {
-    while (1) {
-        int* pclient;
+
+void * thread_function(void *arg){
+    while (true){
+        int *pclient;
         pthread_mutex_lock(&mutex);
-        while ((pclient = dequeue()) == NULL) {
+        if ((pclient = dequeue()) == NULL){
             pthread_cond_wait(&condition_var, &mutex);
+            // try again
+            pclient = dequeue();
         }
         pthread_mutex_unlock(&mutex);
+
         handle_connection(pclient);
-        free(pclient);
     }
-    return NULL;
 }
 
-void* handle_connection(void* p) {
-    int client_socket = *(int*)p;
+void* handle_connection(void* p_client_socket) {
+    int client_socket = *(int*)p_client_socket;
     char buffer[BUFFSIZE];
     ssize_t bytes_read;
     int msgsize = 0;
@@ -172,9 +194,9 @@ void* handle_connection(void* p) {
     // Read filename
     while ((bytes_read = read(client_socket, buffer+msgsize, sizeof(buffer)-msgsize)) > 0) {
         msgsize += bytes_read;
-        if (msgsize >= BUFFSIZE-1 || buffer[msgsize-1] == '\n') break;
+        if (msgsize > BUFFSIZE-1 || buffer[msgsize-1] == '\n') break;
     }
-    check((int)bytes_read, "recv");
+    check(bytes_read, "recv");
     buffer[msgsize-1] = '\0';
     printf("REQUEST: %s\n", buffer);
 
@@ -192,10 +214,13 @@ void* handle_connection(void* p) {
         return NULL;
     }
 
+
     // Send file contents
     while ((bytes_read = fread(buffer, 1, BUFFSIZE, fp)) > 0) {
+        printf("sending %zu bytes\n", bytes_read);
         check((int)write(client_socket, buffer, bytes_read), "write");
     }
+
 
     close(client_socket);
     fclose(fp);
