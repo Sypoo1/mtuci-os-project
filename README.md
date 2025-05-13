@@ -22,3 +22,6 @@ docker run -it --rm windows_client
 
 # Компилируем клиент на виндовс
 gcc client.c -o client -lws2_32
+
+
+ifconfig for virtual box ip
