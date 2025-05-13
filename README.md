@@ -14,7 +14,7 @@ docker run -it --rm --network host linux_client
 ## Windows
 
 # Собираем образ
-docker build -t windows_client  Dockerfile_for_Windows
+docker build -t windows_client  -f Dockerfile_for_Windows .
 
 # Запускаем контейнер
 docker run -it --rm windows_client
