@@ -27,16 +27,6 @@ static pid_t child_pid = 0;
 static int lock_fd = -1;
 static int server_socket = -1;
 
-typedef struct {
-    int client_socket;
-    char command_type[50]; // "resolution" или "pixel_color"
-    int x, y;              // Координаты для pixel_color
-    char last_value[256]; // Последнее отправленное значение
-} ClientSubscription;
-
-ClientSubscription subscriptions[100];
-int num_subscriptions = 0;
-pthread_mutex_t subscriptions_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 pthread_t thread_pool[THREAD_POOL_SIZE];
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -53,7 +43,7 @@ void parent_sigint(int sig);
 void child_sigterm(int sig);
 void get_resolution(char *buffer);
 void get_pixel_color(int x, int y, char *buffer);
-void *update_checker(void *arg);
+
 
 // Ensure only one instance via lock file (parent only)
 bool ensure_single_instance(void) {
@@ -136,36 +126,7 @@ int main(int argc, char **argv) {
     return 0;
 }
 
-void *update_checker(void *arg) {
-    while (1) {
-        sleep(1);
-        pthread_mutex_lock(&subscriptions_mutex);
-        for (int i = 0; i < num_subscriptions; i++) {
-            ClientSubscription sub = subscriptions[i];
-            char current_value[256];
-            if (strcmp(sub.command_type, "resolution") == 0) {
-                get_resolution(current_value);
-                if (strcmp(current_value, sub.last_value) != 0) {
-                    char response[256];
-                    sprintf(response, "UPDATE RESOLUTION %s", current_value);
-                    write(sub.client_socket, response, strlen(response));
-                    strcpy(subscriptions[i].last_value, current_value);
-                }
-            } else if (strcmp(sub.command_type, "pixel_color") == 0) {
-                get_pixel_color(sub.x, sub.y, current_value);
-                if (strcmp(current_value, sub.last_value) != 0) {
-                    char response[256];
-                    sprintf(response, "UPDATE PIXEL_COLOR %d %d %s", sub.x,
-                            sub.y, current_value);
-                    write(sub.client_socket, response, strlen(response));
-                    strcpy(subscriptions[i].last_value, current_value);
-                }
-            }
-        }
-        pthread_mutex_unlock(&subscriptions_mutex);
-    }
-    return NULL;
-}
+
 
 int server_loop(void) {
     int client_socket, addr_size;
@@ -175,9 +136,6 @@ int server_loop(void) {
     for (int i = 0; i < THREAD_POOL_SIZE; i++) {
         pthread_create(&thread_pool[i], NULL, thread_function, NULL);
     }
-
-    pthread_t checker_thread;
-    pthread_create(&checker_thread, NULL, update_checker, NULL);
 
     check((server_socket = socket(AF_INET, SOCK_STREAM, 0)),
           "Failed to create a socket");
@@ -323,16 +281,31 @@ void get_resolution(char *buffer) {
 void get_pixel_color(int x, int y, char *buffer) {
     Display *d = XOpenDisplay(NULL);
     if (!d) {
-        strcpy(buffer, "Error");
+        strcpy(buffer, "Error: Could not open display");
         return;
     }
+
+    Window root = RootWindow(d, DefaultScreen(d));
+    XWindowAttributes gwa;
+    XGetWindowAttributes(d, root, &gwa);
+
+    if (x < 0 || x >= gwa.width || y < 0 || y >= gwa.height) {
+        strcpy(buffer, "Error: Invalid coordinates");
+        XCloseDisplay(d);
+        return;
+    }
+
+    XImage *image = XGetImage(d, root, x, y, 1, 1, AllPlanes, ZPixmap);
+    if (!image) {
+        strcpy(buffer, "Error: Could not get image");
+        XCloseDisplay(d);
+        return;
+    }
+
     XColor color;
-    XImage *image = XGetImage(d, RootWindow(d, DefaultScreen(d)), x, y, 1, 1,
-                              AllPlanes, ZPixmap);
     color.pixel = XGetPixel(image, 0, 0);
     XFree(image);
     XQueryColor(d, DefaultColormap(d, DefaultScreen(d)), &color);
-    sprintf(buffer, "#%02X%02X%02X", color.red >> 8, color.green >> 8,
-            color.blue >> 8);
+    sprintf(buffer, "#%02X%02X%02X", color.red >> 8, color.green >> 8, color.blue >> 8);
     XCloseDisplay(d);
 }
