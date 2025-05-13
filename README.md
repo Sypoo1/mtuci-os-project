@@ -5,16 +5,16 @@
 
 
 # Собираем образ
-docker build -t c-client .
+docker build -t linux_client .
 
 # Запускаем контейнер, пробрасывая хостовую сеть
-docker run -it --rm --network host c-client
+docker run -it --rm --network host linux_client 
 
 
 ## Windows
 
-# Узнать адрес хоста из контейнера
-docker run --rm alpine sh -c "ping -c1 host.docker.internal"
+# Собираем образ
+docker build -t windows_client  Dockerfile_for_Windows
 
-
-const char *host = (argc > 1 ? argv[1] : "host.docker.internal");
+# Запускаем контейнер
+docker run -it --rm windows_client
