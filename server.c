@@ -15,18 +15,18 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
-#define SERVERPORT 8001
-#define BUFFSIZE 4096
-#define SOCKETERROR -1
-#define SERVERBACKLOG 100
+#define SERVERPORT       8001
+#define BUFFSIZE         4096
+#define SOCKETERROR     -1
+#define SERVERBACKLOG   100
 #define THREAD_POOL_SIZE 20
 
 static pid_t child_pid = 0;
 static int lock_fd = -1;
 static int server_socket = -1;
-
 
 pthread_t thread_pool[THREAD_POOL_SIZE];
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -41,65 +41,50 @@ int server_loop(void);
 bool ensure_single_instance(void);
 void parent_sigint(int sig);
 void child_sigterm(int sig);
-void get_resolution(char *buffer);
-void get_pixel_color(int x, int y, char *buffer);
-
+void get_timestamp(char *buf, size_t len);
+void get_resolution(char *buf);
+void get_pixel_color(int x, int y, char *buf);
 
 // Ensure only one instance via lock file (parent only)
 bool ensure_single_instance(void) {
-    // printf("ensure_single_instance()\n");
-    lock_fd = check(open("/tmp/my_server1.lock", O_CREAT | O_RDWR, 0666),
-                    "open lockfile");
+    lock_fd = check(open("/tmp/my_server1.lock", O_CREAT | O_RDWR, 0666), "open lockfile");
     if (flock(lock_fd, LOCK_EX | LOCK_NB) < 0) {
         perror("flock");
         close(lock_fd);
         return false;
     }
-    // printf("ensure_single_instance return true\n");
     return true;
 }
 
 // Parent SIGINT: stop child, cleanup
 void parent_sigint(int sig) {
-    // printf("parent_sigint() wit sig=%d\n", sig);
     if (child_pid > 0) {
         kill(child_pid, SIGTERM);
         waitpid(child_pid, NULL, 0);
     }
-    if (server_socket != -1)
-        close(server_socket);
-    if (lock_fd != -1)
-        close(lock_fd);
+    if (server_socket != -1) close(server_socket);
+    if (lock_fd != -1) close(lock_fd);
     unlink("/tmp/my_server1.lock");
     exit(EXIT_SUCCESS);
 }
 
 // Child SIGTERM: exit gracefully
 void child_sigterm(int sig) {
-    // printf("child_sigterm() with sig=%d\n", sig);
-    if (server_socket != -1)
-        close(server_socket);
+    if (server_socket != -1) close(server_socket);
     exit(EXIT_SUCCESS);
 }
 
 int main(int argc, char **argv) {
-    // printf("main() with %d arguments:\n", argc);
-    // for(int i = 0; i < argc; i++) {
-    //     printf("argument %d == %s\n", i+1, argv[i]);
-    // }
-    // printf("\n");
     signal(SIGINT, parent_sigint);
 
     // Child mode
     if (argc == 2 && strcmp(argv[1], "--child") == 0) {
-        // printf("Child mode, server_socket=%d\n", server_socket);
         signal(SIGTERM, child_sigterm);
         return server_loop();
     }
 
     // Parent mode
     if (!ensure_single_instance()) {
-        // printf("Parent mode\n");
         fprintf(stderr, "Another instance is running.\n");
         return 1;
     }
@@ -111,7 +96,6 @@ int main(int argc, char **argv) {
             exit(EXIT_FAILURE);
         }
         if (pid == 0) {
-            // printf("child process with pid=%d and pid=%d\n",pid, getpid());
             execlp(argv[0], argv[0], "--child", NULL);
             perror("execlp");
             _exit(EXIT_FAILURE);
@@ -119,14 +103,11 @@ int main(int argc, char **argv) {
         child_pid = pid;
         int status;
         waitpid(child_pid, &status, 0);
-        fprintf(stderr, "Child exited (status %d), restarting in 1s...\n",
-                WEXITSTATUS(status));
+        fprintf(stderr, "Child exited (status %d), restarting in 1s...\n", WEXITSTATUS(status));
         sleep(1);
     }
     return 0;
 }
-
-
 
 int server_loop(void) {
     int client_socket, addr_size;
@@ -176,12 +157,10 @@ int server_loop(void) {
         pthread_cond_signal(&condition_var);
         pthread_mutex_unlock(&mutex);
     }
-
     return 0;
 }
 
 int check(int exp, const char *msg) {
-
     if (exp == SOCKETERROR) {
         perror(msg);
         exit(EXIT_FAILURE);
@@ -190,17 +169,13 @@ int check(int exp, const char *msg) {
 }
 
 void *thread_function(void *arg) {
-
-    while (true) {
+    while (1) {
         int *pclient;
         pthread_mutex_lock(&mutex);
         if ((pclient = dequeue()) == NULL) {
             pthread_cond_wait(&condition_var, &mutex);
-            // try again
-            pclient = dequeue();
         }
         pthread_mutex_unlock(&mutex);
-
         handle_connection(pclient);
     }
 }
@@ -208,104 +183,67 @@ void *thread_function(void *arg) {
 void *handle_connection(void *p_client_socket) {
     int client_socket = *(int *)p_client_socket;
     free(p_client_socket);
+
     char buffer[BUFFSIZE];
-    ssize_t bytes_read;
+    ssize_t n = read(client_socket, buffer, BUFFSIZE - 1);
+    if (n <= 0) { close(client_socket); return NULL; }
+    buffer[n] = '\0';
+    char *nl = strchr(buffer, '\n'); if (nl) *nl = '\0';
 
-    while (bytes_read = read(client_socket, buffer, BUFFSIZE - 1)) {
-        if (bytes_read <= 0)
-            break;
-        buffer[bytes_read] = '\0';
+    char timestamp[64];
+    get_timestamp(timestamp, sizeof(timestamp));
 
-        if (strncmp(buffer, "GET resolution", 14) == 0) {
-            char resolution[256];
-            get_resolution(resolution);
-            char response[256];
-            sprintf(response, "RESOLUTION %s", resolution);
-            write(client_socket, response, strlen(response));
-
-            pthread_mutex_lock(&subscriptions_mutex);
-            subscriptions[num_subscriptions].client_socket = client_socket;
-            strcpy(subscriptions[num_subscriptions].command_type, "resolution");
-            strcpy(subscriptions[num_subscriptions].last_value, resolution);
-            num_subscriptions++;
-            pthread_mutex_unlock(&subscriptions_mutex);
-        } else if (strncmp(buffer, "GET pixel_color", 15) == 0) {
-            int x, y;
-            sscanf(buffer, "GET pixel_color %d %d", &x, &y);
-            char color[20];
-            get_pixel_color(x, y, color);
-            char response[256];
-            sprintf(response, "PIXEL_COLOR %d %d %s", x, y, color);
-            write(client_socket, response, strlen(response));
-
-            pthread_mutex_lock(&subscriptions_mutex);
-            subscriptions[num_subscriptions].client_socket = client_socket;
-            strcpy(subscriptions[num_subscriptions].command_type,
-                   "pixel_color");
-            subscriptions[num_subscriptions].x = x;
-            subscriptions[num_subscriptions].y = y;
-            strcpy(subscriptions[num_subscriptions].last_value, color);
-            num_subscriptions++;
-            pthread_mutex_unlock(&subscriptions_mutex);
-        } else if (strncmp(buffer, "DISCONNECT", 10) == 0) {
-            write(client_socket, "DISCONNECTED", 12);
-            break;
+    if (strcmp(buffer, "CONNECT") == 0) {
+        dprintf(client_socket, "OK CONNECT %s\n", timestamp);
+    } else if (strcmp(buffer, "GET resolution") == 0) {
+        char res[32];
+        get_resolution(res);
+        dprintf(client_socket, "RESOLUTION %s %s\n", res, timestamp);
+    } else if (strncmp(buffer, "GET pixel_color", 15) == 0) {
+        int x, y;
+        if (sscanf(buffer, "GET pixel_color %d %d", &x, &y) == 2) {
+            char col[16];
+            get_pixel_color(x, y, col);
+            dprintf(client_socket, "PIXEL_COLOR %d %d %s %s\n", x, y, col, timestamp);
+        } else {
+            dprintf(client_socket, "ERROR bad command %s\n", timestamp);
         }
+    } else if (strcmp(buffer, "DISCONNECT") == 0) {
+        dprintf(client_socket, "OK DISCONNECT %s\n", timestamp);
+    } else {
+        dprintf(client_socket, "ERROR unknown %s\n", timestamp);
     }
-
-    pthread_mutex_lock(&subscriptions_mutex);
-    for (int i = 0; i < num_subscriptions; i++) {
-        if (subscriptions[i].client_socket == client_socket) {
-            subscriptions[i] = subscriptions[num_subscriptions - 1];
-            num_subscriptions--;
-            i--;
-        }
-    }
-    pthread_mutex_unlock(&subscriptions_mutex);
 
     close(client_socket);
     return NULL;
 }
 
-void get_resolution(char *buffer) {
+void get_timestamp(char *buf, size_t len) {
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    strftime(buf, len, "%Y-%m-%d %H:%M:%S", &tm);
+}
+
+void get_resolution(char *buf) {
     Display *d = XOpenDisplay(NULL);
-    if (!d) {
-        strcpy(buffer, "Error");
-        return;
-    }
+    if (!d) { strcpy(buf, "Error"); return; }
     Screen *s = DefaultScreenOfDisplay(d);
-    sprintf(buffer, "%dx%d", s->width, s->height);
+    sprintf(buf, "%dx%d", s->width, s->height);
     XCloseDisplay(d);
 }
 
-void get_pixel_color(int x, int y, char *buffer) {
+void get_pixel_color(int x, int y, char *buf) {
     Display *d = XOpenDisplay(NULL);
-    if (!d) {
-        strcpy(buffer, "Error: Could not open display");
-        return;
-    }
-
+    if (!d) { strcpy(buf, "Error"); return; }
     Window root = RootWindow(d, DefaultScreen(d));
-    XWindowAttributes gwa;
-    XGetWindowAttributes(d, root, &gwa);
-
-    if (x < 0 || x >= gwa.width || y < 0 || y >= gwa.height) {
-        strcpy(buffer, "Error: Invalid coordinates");
-        XCloseDisplay(d);
-        return;
-    }
-
-    XImage *image = XGetImage(d, root, x, y, 1, 1, AllPlanes, ZPixmap);
-    if (!image) {
-        strcpy(buffer, "Error: Could not get image");
-        XCloseDisplay(d);
-        return;
-    }
-
-    XColor color;
-    color.pixel = XGetPixel(image, 0, 0);
-    XFree(image);
-    XQueryColor(d, DefaultColormap(d, DefaultScreen(d)), &color);
-    sprintf(buffer, "#%02X%02X%02X", color.red >> 8, color.green >> 8, color.blue >> 8);
+    XImage *img = XGetImage(d, root, x, y, 1, 1, AllPlanes, ZPixmap);
+    if (!img) { strcpy(buf, "Error"); XCloseDisplay(d); return; }
+    unsigned long pix = XGetPixel(img, 0, 0);
+    XFree(img);
+    int r = (pix & img->red_mask) >> 16;
+    int g = (pix & img->green_mask) >> 8;
+    int b = pix & img->blue_mask;
+    sprintf(buf, "#%02X%02X%02X", r, g, b);
     XCloseDisplay(d);
 }
