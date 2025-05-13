@@ -212,7 +212,7 @@ void *handle_connection(void *p_client_socket) {
     {
         char ts[64];
         get_timestamp(ts, sizeof(ts));
-        int len = snprintf(reply, sizeof(reply), "OK %s\n", ts);
+        int len = snprintf(reply, sizeof(reply), "HELLO FROM SERVER 1 %s\n", ts);
         if (write(client_socket, reply, len) < 0) {
             perror("write");
             close(client_socket);
@@ -256,7 +256,7 @@ void *handle_connection(void *p_client_socket) {
         } else if (strncmp(buffer, "DISCONNECT", 10) == 0) {
             char ts[64];
             get_timestamp(ts, sizeof(ts));
-            int len = snprintf(reply, sizeof(reply), "OK %s\n", ts);
+            int len = snprintf(reply, sizeof(reply), "GOOD BYE FROM SERVER 1 %s\n", ts);
             write(client_socket, reply, len);
             break;
 
@@ -264,7 +264,7 @@ void *handle_connection(void *p_client_socket) {
             write(client_socket, "ERROR Unknown command\n", 22);
         }
     }
-
+    printf("Closing connection");
     close(client_socket);
     return NULL;
 }
