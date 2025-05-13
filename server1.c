@@ -14,6 +14,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <X11/Xlib.h>
 
 #include "myqueue.h"
 
@@ -41,6 +42,8 @@ bool ensure_single_instance(void);
 void parent_sigint(int sig);
 void child_sigterm(int sig);
 static void get_timestamp(char *out, size_t len);
+void get_screen_resolution(char *resolution, size_t size);
+
 
 // Ensure only one instance via lock file (parent only)
 bool ensure_single_instance(void) {
@@ -236,12 +239,15 @@ void *handle_connection(void *p_client_socket) {
         }
         buffer[msg_len] = '\0';
 
-        // GET_RESOLUTION — возвращаем захардкоженные 1920x1080
+        // GET_RESOLUTION — возвращаем реальное разрешение экрана
         if (strncmp(buffer, "GET_RESOLUTION", 14) == 0) {
             char ts[64];
+            char resolution[16]; // Достаточно места для "XXXXxXXXX"
             get_timestamp(ts, sizeof(ts));
+            get_screen_resolution(resolution, sizeof(resolution));
+
             int len = snprintf(reply, sizeof(reply),
-                               "1920x1080 %s\n", ts);
+                            "%s %s\n", resolution, ts);
             write(client_socket, reply, len);
 
         // GET_PIXEL — возвращаем захардкоженные RGB 128 128 128
@@ -273,4 +279,20 @@ static void get_timestamp(char *out, size_t len) {
     struct tm tm;
     localtime_r(&now, &tm);
     strftime(out, len, "%Y-%m-%d %H:%M:%S", &tm);
+}
+
+void get_screen_resolution(char *resolution, size_t size) {
+    Display *display = XOpenDisplay(NULL);
+    if (display == NULL) {
+        fprintf(stderr, "Cannot open display\n");
+        return;
+    }
+
+    Screen *screen = DefaultScreenOfDisplay(display);
+    int width = WidthOfScreen(screen);
+    int height = HeightOfScreen(screen);
+
+    XCloseDisplay(display);
+
+    snprintf(resolution, size, "%dx%d", width, height);
 }
