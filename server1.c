@@ -19,172 +19,240 @@
 #include <time.h>
 #include <unistd.h>
 
-#define SERVERPORT 8001
-#define BUFFSIZE 4096
-#define SOCKETERROR -1
-#define BACKLOG 100
-#define THREADS 20
+#define SERVERPORT       8001
+#define BUFFSIZE         4096
+#define SOCKETERROR     -1
+#define SERVERBACKLOG   100
+#define THREAD_POOL_SIZE 20
 
 static pid_t child_pid = 0;
 static int lock_fd = -1;
-static int server_sock = -1;
+static int server_socket = -1;
 
-pthread_t pool[THREADS];
-pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
+pthread_t thread_pool[THREAD_POOL_SIZE];
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t condition_var = PTHREAD_COND_INITIALIZER;
 typedef struct sockaddr_in SA_IN;
+typedef struct sockaddr SA;
 
-enum cmd { CONNECT, RES, PIXEL, DISCONNECT, UNKNOWN };
+void *handle_connection(void *p_client_socket);
+int check(int exp, const char *msg);
+void *thread_function(void *arg);
+int server_loop(void);
+bool ensure_single_instance(void);
+void parent_sigint(int sig);
+void child_sigterm(int sig);
+void get_timestamp(char *buf, size_t len);
+void get_resolution(char *buf);
+void get_pixel_color(int x, int y, char *buf);
 
-void *worker(void *arg);
-bool ensure_single(void);
-void parent_int(int sig);
-void child_term(int sig);
-void get_time(char *b, size_t n);
-void get_resolution(char *b);
-void get_pixel(int x, int y, char *b);
-
-bool ensure_single(void) {
-    lock_fd = open("/tmp/server1.lock", O_CREAT | O_RDWR, 0666);
-    if (lock_fd < 0 || flock(lock_fd, LOCK_EX | LOCK_NB) < 0)
+// Ensure only one instance via lock file (parent only)
+bool ensure_single_instance(void) {
+    lock_fd = check(open("/tmp/my_server1.lock", O_CREAT | O_RDWR, 0666), "open lockfile");
+    if (flock(lock_fd, LOCK_EX | LOCK_NB) < 0) {
+        perror("flock");
+        close(lock_fd);
         return false;
+    }
     return true;
 }
 
-void parent_int(int sig) {
-    if (child_pid > 0)
+// Parent SIGINT: stop child, cleanup
+void parent_sigint(int sig) {
+    if (child_pid > 0) {
         kill(child_pid, SIGTERM);
-    if (server_sock != -1)
-        close(server_sock);
-    if (lock_fd != -1)
-        close(lock_fd);
-    unlink("/tmp/server1.lock");
-    exit(0);
+        waitpid(child_pid, NULL, 0);
+    }
+    if (server_socket != -1) close(server_socket);
+    if (lock_fd != -1) close(lock_fd);
+    unlink("/tmp/my_server1.lock");
+    exit(EXIT_SUCCESS);
 }
 
-void child_term(int sig) {
-    if (server_sock != -1)
-        close(server_sock);
-    exit(0);
+// Child SIGTERM: exit gracefully
+void child_sigterm(int sig) {
+    if (server_socket != -1) close(server_socket);
+    exit(EXIT_SUCCESS);
 }
 
-int main() {
-    signal(SIGINT, parent_int);
-    if (!ensure_single()) {
-        fprintf(stderr, "Already running\n");
+int main(int argc, char **argv) {
+    signal(SIGINT, parent_sigint);
+
+    // Child mode
+    if (argc == 2 && strcmp(argv[1], "--child") == 0) {
+        signal(SIGTERM, child_sigterm);
+        return server_loop();
+    }
+
+    // Parent mode
+    if (!ensure_single_instance()) {
+        fprintf(stderr, "Another instance is running.\n");
         return 1;
     }
+
     while (1) {
         pid_t pid = fork();
-        if (pid < 0)
-            exit(1);
+        if (pid < 0) {
+            perror("fork");
+            exit(EXIT_FAILURE);
+        }
         if (pid == 0) {
-            signal(SIGTERM, child_term);
-            goto child;
+            execlp(argv[0], argv[0], "--child", NULL);
+            perror("execlp");
+            _exit(EXIT_FAILURE);
         }
         child_pid = pid;
-        int st;
-        waitpid(pid, &st, 0);
-        fprintf(stderr, "Child exited, respawning...\n");
+        int status;
+        waitpid(child_pid, &status, 0);
+        fprintf(stderr, "Child exited (status %d), restarting in 1s...\n", WEXITSTATUS(status));
         sleep(1);
     }
-child:
-    for (int i = 0; i < THREADS; i++)
-        pthread_create(&pool[i], 0, worker, 0);
-    server_sock = socket(AF_INET, SOCK_STREAM, 0);
+    return 0;
+}
+
+int server_loop(void) {
+    int client_socket, addr_size;
+    SA_IN server_addr, client_addr;
+
+    // create a banch of threads to handle connections
+    for (int i = 0; i < THREAD_POOL_SIZE; i++) {
+        pthread_create(&thread_pool[i], NULL, thread_function, NULL);
+    }
+
+    check((server_socket = socket(AF_INET, SOCK_STREAM, 0)),
+          "Failed to create a socket");
+
+    // printf("server_socket=%d\n",server_socket);
+
+    // Set SO_REUSEADDR option
     int opt = 1;
-    setsockopt(server_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    SA_IN addr = {.sin_family = AF_INET,
-                  .sin_addr.s_addr = INADDR_ANY,
-                  .sin_port = htons(SERVERPORT)};
-    bind(server_sock, (SA *)&addr, sizeof(addr));
-    listen(server_sock, BACKLOG);
+    check(
+        setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)),
+        "setsockopt(SO_REUSEADDR) failed");
+
+    // initialize the address struct
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(SERVERPORT);
+
+    check(bind(server_socket, (SA *)&server_addr, sizeof(server_addr)),
+          "Bind Failed!");
+    check(listen(server_socket, SERVERBACKLOG), "Listen Failed!");
+    // printf("server_socket=%d\n",server_socket);
+    while (true) {
+
+        printf("Waiting for connections...\n");
+        // wait for, and eventually accept any incoming connections
+        addr_size = sizeof(SA_IN);
+        check(client_socket = accept(server_socket, (SA *)&client_addr,
+                                     (socklen_t *)&addr_size),
+              "accept failed");
+        printf("Connected!\n");
+
+        int *pclient = malloc(sizeof(int));
+        *pclient = client_socket;
+
+        // make sure only one thread messes with queue
+        pthread_mutex_lock(&mutex);
+        enqueue(pclient);
+        pthread_cond_signal(&condition_var);
+        pthread_mutex_unlock(&mutex);
+    }
+    return 0;
+}
+
+int check(int exp, const char *msg) {
+    if (exp == SOCKETERROR) {
+        perror(msg);
+        exit(EXIT_FAILURE);
+    }
+    return exp;
+}
+
+void *thread_function(void *arg) {
     while (1) {
-        int c = accept(server_sock, NULL, NULL);
-        int *p = malloc(sizeof(int));
-        *p = c;
-        pthread_mutex_lock(&mtx);
-        enqueue(p);
-        pthread_cond_signal(&cv);
-        pthread_mutex_unlock(&mtx);
+        int *pclient;
+        pthread_mutex_lock(&mutex);
+        if ((pclient = dequeue()) == NULL) {
+            pthread_cond_wait(&condition_var, &mutex);
+        }
+        pthread_mutex_unlock(&mutex);
+        handle_connection(pclient);
     }
 }
 
-void *worker(void *arg) {
-    while (1) {
-        int *ps;
-        pthread_mutex_lock(&mtx);
-        while ((ps = dequeue()) == NULL)
-            pthread_cond_wait(&cv, &mtx);
-        pthread_mutex_unlock(&mtx);
-        int sock = *ps;
-        free(ps);
-        char in[BUFFSIZE], out[BUFFSIZE];
-        ssize_t r;
-        while ((r = read(sock, in, 1)) > 0) { // read line
-            static char buf[BUFFSIZE];
-            static size_t pos;
-            if (in[0] == '\n' || pos + 1 >= BUFFSIZE) {
-                buf[pos] = 0;
-                pos = 0;
-            } else
-                buf[pos++] = in[0];
-            if (in[0] != '\n')
-                continue;
-            char ts[64];
-            get_time(ts, sizeof(ts));
-            int x, y;
-            if (strcmp(buf, "CONNECT") == 0)
-                snprintf(out, sizeof(out), "%s OK Connected\n", ts);
-            else if (strcmp(buf, "GET_RESOLUTION") == 0) {
-                char rbuf[64];
-                get_resolution(rbuf);
-                snprintf(out, sizeof(out), "%s OK %s\n", ts, rbuf);
-            } else if (sscanf(buf, "GET_PIXEL %d %d", &x, &y) == 2) {
-                char cbuf[32];
-                get_pixel(x, y, cbuf);
-                snprintf(out, sizeof(out), "%s OK %s\n", ts, cbuf);
-            } else if (strcmp(buf, "DISCONNECT") == 0) {
-                snprintf(out, sizeof(out), "%s OK Disconnected\n", ts);
-                write(sock, out, strlen(out));
-                break;
-            } else
-                snprintf(out, sizeof(out), "%s ERROR Unknown\n", ts);
-            write(sock, out, strlen(out));
-        }
-        close(sock);
+void *handle_connection(void *p_client_socket) {
+    printf("handle_connection()\n");
+    int client_socket = *(int *)p_client_socket;
+    char buffer[BUFFSIZE];
+    ssize_t bytes_read;
+    int msgsize = 0;
+    char actualpath[PATH_MAX + 1];
+
+    // Read filename
+    while ((bytes_read = read(client_socket, buffer + msgsize,
+                              sizeof(buffer) - msgsize)) > 0) {
+        msgsize += bytes_read;
+        if (msgsize > BUFFSIZE - 1 || buffer[msgsize - 1] == '\n')
+            break;
     }
+    check(bytes_read, "recv");
+    buffer[msgsize - 1] = '\0';
+    printf("REQUEST: %s\n", buffer);
+
+    // // Resolve path
+    // if (realpath(buffer, actualpath) == NULL) {
+    //     perror("realpath");
+    //     close(client_socket);
+    //     return NULL;
+    // }
+
+    // FILE *fp = fopen(actualpath, "r");
+    // if (!fp) {
+    //     perror("fopen");
+    //     close(client_socket);
+    //     return NULL;
+    // }
+
+    // // Send file contents
+    // while ((bytes_read = fread(buffer, 1, BUFFSIZE, fp)) > 0) {
+    //     printf("sending %zu bytes\n", bytes_read);
+    //     check((int)write(client_socket, buffer, bytes_read), "write");
+    // }
+
+    close(client_socket);
+    // fclose(fp);
     return NULL;
 }
 
-void get_time(char *b, size_t n) {
-    time_t t = time(NULL);
-    struct tm m;
-    localtime_r(&t, &m);
-    strftime(b, n, "%Y-%m-%d %H:%M:%S", &m);
+
+void get_timestamp(char *buf, size_t len) {
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    strftime(buf, len, "%Y-%m-%d %H:%M:%S", &tm);
 }
-void get_resolution(char *b) {
+
+void get_resolution(char *buf) {
     Display *d = XOpenDisplay(NULL);
-    if (!d) {
-        strcpy(b, "Error");
-        return;
-    }
+    if (!d) { strcpy(buf, "Error"); return; }
     Screen *s = DefaultScreenOfDisplay(d);
-    sprintf(b, "%dx%d", s->width, s->height);
+    sprintf(buf, "%dx%d", s->width, s->height);
     XCloseDisplay(d);
 }
-void get_pixel(int x, int y, char *b) {
+
+void get_pixel_color(int x, int y, char *buf) {
     Display *d = XOpenDisplay(NULL);
-    if (!d) {
-        strcpy(b, "Error");
-        return;
-    }
-    Window r = RootWindow(d, DefaultScreen(d));
-    XImage *i = XGetImage(d, r, x, y, 1, 1, AllPlanes, ZPixmap);
-    unsigned long p = XGetPixel(i, 0, 0);
-    XFree(i);
-    int R = (p & i->red_mask) >> 16, G = (p & i->green_mask) >> 8,
-        B = p & i->blue_mask;
-    sprintf(b, "#%02X%02X%02X", R, G, B);
+    if (!d) { strcpy(buf, "Error"); return; }
+    Window root = RootWindow(d, DefaultScreen(d));
+    XImage *img = XGetImage(d, root, x, y, 1, 1, AllPlanes, ZPixmap);
+    if (!img) { strcpy(buf, "Error"); XCloseDisplay(d); return; }
+    unsigned long pix = XGetPixel(img, 0, 0);
+    XFree(img);
+    int r = (pix & img->red_mask) >> 16;
+    int g = (pix & img->green_mask) >> 8;
+    int b = pix & img->blue_mask;
+    sprintf(buf, "#%02X%02X%02X", r, g, b);
     XCloseDisplay(d);
 }
+
