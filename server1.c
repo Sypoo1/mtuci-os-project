@@ -1,3 +1,5 @@
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -14,7 +16,6 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <X11/Xlib.h>
 
 #include "myqueue.h"
 
@@ -42,8 +43,8 @@ bool ensure_single_instance(void);
 void parent_sigint(int sig);
 void child_sigterm(int sig);
 static void get_timestamp(char *out, size_t len);
-void get_screen_resolution(char *resolution, size_t size);
-
+void get_screen_resolution(int *width, int *height);
+int get_pixel_color(int x, int y, int *r, int *g, int *b);
 
 // Ensure only one instance via lock file (parent only)
 bool ensure_single_instance(void) {
@@ -215,7 +216,8 @@ void *handle_connection(void *p_client_socket) {
     {
         char ts[64];
         get_timestamp(ts, sizeof(ts));
-        int len = snprintf(reply, sizeof(reply), "HELLO FROM SERVER 1 %s\n", ts);
+        int len =
+            snprintf(reply, sizeof(reply), "HELLO FROM SERVER 1 %s\n", ts);
         if (write(client_socket, reply, len) < 0) {
             perror("write");
             close(client_socket);
@@ -230,7 +232,7 @@ void *handle_connection(void *p_client_socket) {
         while ((n = read(client_socket, buffer + msg_len,
                          sizeof(buffer) - msg_len - 1)) > 0) {
             msg_len += n;
-            if (buffer[msg_len - 1] == '\n' || msg_len >= sizeof(buffer)-1)
+            if (buffer[msg_len - 1] == '\n' || msg_len >= sizeof(buffer) - 1)
                 break;
         }
         if (n <= 0) {
@@ -239,30 +241,49 @@ void *handle_connection(void *p_client_socket) {
         }
         buffer[msg_len] = '\0';
 
-        // GET_RESOLUTION — возвращаем реальное разрешение экрана
+        printf("REQUEST: %s\n", buffer);
+
         if (strncmp(buffer, "GET_RESOLUTION", 14) == 0) {
             char ts[64];
-            char resolution[16]; // Достаточно места для "XXXXxXXXX"
+            int width, height;
             get_timestamp(ts, sizeof(ts));
-            get_screen_resolution(resolution, sizeof(resolution));
+            get_screen_resolution(&width, &height);
 
-            int len = snprintf(reply, sizeof(reply),
-                            "%s %s\n", resolution, ts);
+            int len =
+                snprintf(reply, sizeof(reply), "%dx%d %s\n", width, height, ts);
             write(client_socket, reply, len);
 
-        // GET_PIXEL — возвращаем захардкоженные RGB 128 128 128
+            // Пример использования GET_PIXEL
         } else if (strncmp(buffer, "GET_PIXEL", 9) == 0) {
             char ts[64];
+            int r, g, b;
             get_timestamp(ts, sizeof(ts));
-            int len = snprintf(reply, sizeof(reply),
-                               "128 128 128 %s\n", ts);
-            write(client_socket, reply, len);
 
-        // DISCONNECT — отсылаем OK и выходим
+            // Извлекаем координаты x и y из запроса
+            int x, y;
+            if (sscanf(buffer, "GET_PIXEL %d %d", &x, &y) != 2) {
+                fprintf(stderr, "Invalid GET_PIXEL format\n");
+                int len = snprintf(reply, sizeof(reply),
+                                   "Invalid GET_PIXEL format %s\n", ts);
+                write(client_socket, reply, len);
+            } else {
+                if (get_pixel_color(x, y, &r, &g, &b) == 0) {
+                    int len = snprintf(reply, sizeof(reply), "%d %d %d %s\n", r,
+                                       g, b, ts);
+                    write(client_socket, reply, len);
+                } else {
+                    int len = snprintf(reply, sizeof(reply),
+                                       "Error getting pixel color %s\n", ts);
+                    write(client_socket, reply, len);
+                }
+            }
+
+            // DISCONNECT — отсылаем OK и выходим
         } else if (strncmp(buffer, "DISCONNECT", 10) == 0) {
             char ts[64];
             get_timestamp(ts, sizeof(ts));
-            int len = snprintf(reply, sizeof(reply), "GOOD BYE FROM SERVER 1 %s\n", ts);
+            int len = snprintf(reply, sizeof(reply),
+                               "GOOD BYE FROM SERVER 1 %s\n", ts);
             write(client_socket, reply, len);
             break;
 
@@ -274,6 +295,7 @@ void *handle_connection(void *p_client_socket) {
     close(client_socket);
     return NULL;
 }
+
 static void get_timestamp(char *out, size_t len) {
     time_t now = time(NULL);
     struct tm tm;
@@ -281,7 +303,7 @@ static void get_timestamp(char *out, size_t len) {
     strftime(out, len, "%Y-%m-%d %H:%M:%S", &tm);
 }
 
-void get_screen_resolution(char *resolution, size_t size) {
+void get_screen_resolution(int *width, int *height) {
     Display *display = XOpenDisplay(NULL);
     if (display == NULL) {
         fprintf(stderr, "Cannot open display\n");
@@ -289,10 +311,54 @@ void get_screen_resolution(char *resolution, size_t size) {
     }
 
     Screen *screen = DefaultScreenOfDisplay(display);
-    int width = WidthOfScreen(screen);
-    int height = HeightOfScreen(screen);
+    *width = WidthOfScreen(screen);
+    *height = HeightOfScreen(screen);
 
     XCloseDisplay(display);
+}
+int get_pixel_color(int x, int y, int *r, int *g, int *b) {
+    Display *display = XOpenDisplay(NULL);
+    if (!display) {
+        fprintf(stderr, "Cannot open display\n");
+        return -1;
+    }
 
-    snprintf(resolution, size, "%dx%d", width, height);
+    Window root = DefaultRootWindow(display);
+
+    // Be sure to get image
+    XSync(display, False);
+
+    int screen_width = 0, screen_height = 0;
+    get_screen_resolution(&screen_width, &screen_height);
+
+    if (x < 0 || x >= screen_width || y < 0 || y >= screen_height) {
+        fprintf(stderr, "Coordinates out of screen bounds\n");
+        XCloseDisplay(display);
+        return -1;
+    }
+
+    // Capture 1×1 pixel
+    XImage *image = XGetImage(display, root, x, y, 1, 1, AllPlanes, ZPixmap);
+    if (!image) {
+        fprintf(stderr, "Cannot get image (BadMatch?)\n");
+        XCloseDisplay(display);
+        return -1;
+    }
+
+    unsigned long pixel = XGetPixel(image, 0, 0);
+    XDestroyImage(image);
+
+    // Getting pixel RGB
+    XColor xcolor;
+    Colormap cmap = DefaultColormap(display, DefaultScreen(display));
+    xcolor.pixel = pixel;
+    XQueryColor(display, cmap, &xcolor);
+
+    // Transfer from 16-bit to 8-bit
+    *r = xcolor.red >> 8;
+    *g = xcolor.green >> 8;
+    *b = xcolor.blue >> 8;
+
+    XCloseDisplay(display);
+    return 0;
 }
