@@ -182,39 +182,44 @@ void *thread_function(void *arg) {
 
 void *handle_connection(void *p_client_socket) {
     int client_socket = *(int *)p_client_socket;
-    free(p_client_socket);
-
     char buffer[BUFFSIZE];
-    ssize_t n = read(client_socket, buffer, BUFFSIZE - 1);
-    if (n <= 0) { close(client_socket); return NULL; }
-    buffer[n] = '\0';
-    char *nl = strchr(buffer, '\n'); if (nl) *nl = '\0';
+    ssize_t bytes_read;
+    int msgsize = 0;
+    char actualpath[PATH_MAX + 1];
 
-    char timestamp[64];
-    get_timestamp(timestamp, sizeof(timestamp));
+    // Read filename
+    while ((bytes_read = read(client_socket, buffer + msgsize,
+                              sizeof(buffer) - msgsize)) > 0) {
+        msgsize += bytes_read;
+        if (msgsize > BUFFSIZE - 1 || buffer[msgsize - 1] == '\n')
+            break;
+    }
+    check(bytes_read, "recv");
+    buffer[msgsize - 1] = '\0';
+    printf("REQUEST: %s\n", buffer);
 
-    if (strcmp(buffer, "CONNECT") == 0) {
-        dprintf(client_socket, "OK CONNECT %s\n", timestamp);
-    } else if (strcmp(buffer, "GET resolution") == 0) {
-        char res[32];
-        get_resolution(res);
-        dprintf(client_socket, "RESOLUTION %s %s\n", res, timestamp);
-    } else if (strncmp(buffer, "GET pixel_color", 15) == 0) {
-        int x, y;
-        if (sscanf(buffer, "GET pixel_color %d %d", &x, &y) == 2) {
-            char col[16];
-            get_pixel_color(x, y, col);
-            dprintf(client_socket, "PIXEL_COLOR %d %d %s %s\n", x, y, col, timestamp);
-        } else {
-            dprintf(client_socket, "ERROR bad command %s\n", timestamp);
-        }
-    } else if (strcmp(buffer, "DISCONNECT") == 0) {
-        dprintf(client_socket, "OK DISCONNECT %s\n", timestamp);
-    } else {
-        dprintf(client_socket, "ERROR unknown %s\n", timestamp);
+    // Resolve path
+    if (realpath(buffer, actualpath) == NULL) {
+        perror("realpath");
+        close(client_socket);
+        return NULL;
+    }
+
+    FILE *fp = fopen(actualpath, "r");
+    if (!fp) {
+        perror("fopen");
+        close(client_socket);
+        return NULL;
+    }
+
+    // Send file contents
+    while ((bytes_read = fread(buffer, 1, BUFFSIZE, fp)) > 0) {
+        printf("sending %zu bytes\n", bytes_read);
+        check((int)write(client_socket, buffer, bytes_read), "write");
     }
 
     close(client_socket);
+    fclose(fp);
     return NULL;
 }
 
