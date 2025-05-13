@@ -40,6 +40,7 @@ int server_loop(void);
 bool ensure_single_instance(void);
 void parent_sigint(int sig);
 void child_sigterm(int sig);
+static void get_timestamp(char *out, size_t len);
 
 // Ensure only one instance via lock file (parent only)
 bool ensure_single_instance(void) {
@@ -200,28 +201,76 @@ void *thread_function(void *arg) {
 }
 
 void *handle_connection(void *p_client_socket) {
-
     int client_socket = *(int *)p_client_socket;
-    char buffer[BUFFSIZE];
-    ssize_t bytes_read;
-    int msgsize = 0;
+    free(p_client_socket);
 
-    while(true){
-        // Read request
-        while ((bytes_read = read(client_socket, buffer + msgsize,
-                                sizeof(buffer) - msgsize)) > 0) {
-            msgsize += bytes_read;
-            if (msgsize > BUFFSIZE - 1 || buffer[msgsize - 1] == '\n')
+    char buffer[BUFFSIZE];
+    char reply[BUFFSIZE];
+    ssize_t n;
+
+    // Сразу отправляем OK с текущим временем
+    {
+        char ts[64];
+        get_timestamp(ts, sizeof(ts));
+        int len = snprintf(reply, sizeof(reply), "OK %s\n", ts);
+        if (write(client_socket, reply, len) < 0) {
+            perror("write");
+            close(client_socket);
+            return NULL;
+        }
+    }
+
+    // Обрабатываем команды в цикле
+    while (1) {
+        // Читаем сообщение до '\n'
+        size_t msg_len = 0;
+        while ((n = read(client_socket, buffer + msg_len,
+                         sizeof(buffer) - msg_len - 1)) > 0) {
+            msg_len += n;
+            if (buffer[msg_len - 1] == '\n' || msg_len >= sizeof(buffer)-1)
                 break;
         }
-        check(bytes_read, "recv");
-        buffer[msgsize - 1] = '\0';
-        printf("REQUEST: %s\n", buffer);
+        if (n <= 0) {
+            perror("read");
+            break;
+        }
+        buffer[msg_len] = '\0';
 
-        check((int)write(client_socket, buffer, bytes_read), "write");
-        break;
+        // GET_RESOLUTION — возвращаем захардкоженные 1920x1080
+        if (strncmp(buffer, "GET_RESOLUTION", 14) == 0) {
+            char ts[64];
+            get_timestamp(ts, sizeof(ts));
+            int len = snprintf(reply, sizeof(reply),
+                               "1920x1080 %s\n", ts);
+            write(client_socket, reply, len);
+
+        // GET_PIXEL — возвращаем захардкоженные RGB 128 128 128
+        } else if (strncmp(buffer, "GET_PIXEL", 9) == 0) {
+            char ts[64];
+            get_timestamp(ts, sizeof(ts));
+            int len = snprintf(reply, sizeof(reply),
+                               "128 128 128 %s\n", ts);
+            write(client_socket, reply, len);
+
+        // DISCONNECT — отсылаем OK и выходим
+        } else if (strncmp(buffer, "DISCONNECT", 10) == 0) {
+            char ts[64];
+            get_timestamp(ts, sizeof(ts));
+            int len = snprintf(reply, sizeof(reply), "OK %s\n", ts);
+            write(client_socket, reply, len);
+            break;
+
+        } else {
+            write(client_socket, "ERROR Unknown command\n", 22);
+        }
     }
-    close(client_socket);
 
+    close(client_socket);
     return NULL;
+}
+static void get_timestamp(char *out, size_t len) {
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    strftime(out, len, "%Y-%m-%d %H:%M:%S", &tm);
 }
