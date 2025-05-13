@@ -1,5 +1,3 @@
-/* server.c: single-instance + parent-child restart for Linux using
- * /tmp/my_server1.lock */
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
