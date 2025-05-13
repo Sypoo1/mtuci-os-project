@@ -1,16 +1,40 @@
-#include <arpa/inet.h>
-#include <errno.h>
-#include <netdb.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
+#ifdef _WIN32
+    // Для Windows
+    #include <winsock2.h>
+    #include <windows.h>
+    #pragma comment(lib, "ws2_32.lib")
+#else
+    // Для Linux
+    #include <arpa/inet.h>
+    #include <errno.h>
+    #include <netdb.h>
+    #include <stdio.h>
+    #include <stdlib.h>
+    #include <string.h>
+    #include <sys/socket.h>
+    #include <sys/types.h>
+    #include <unistd.h>
+#endif
 
 #define S1_PORT 8001
 #define S2_PORT 8002
 #define BS 4096
+
+#ifdef _WIN32
+    // Инициализация WinSock на Windows
+    int init_winsock() {
+        WSADATA wsaData;
+        return WSAStartup(MAKEWORD(2, 2), &wsaData);
+    }
+
+    // Завершение работы с WinSock
+    void cleanup_winsock() {
+        WSACleanup();
+    }
+
+    // Сокет и другие операции специфичны для Windows
+    #define close closesocket
+#endif
 
 // Читает одну строку (до '\n') из сокета и печатает её
 void read_greeting(int sd) {
@@ -119,9 +143,15 @@ void menu() {
 }
 
 int main(int argc, char **argv) {
+#ifdef _WIN32
+    // Инициализация WinSock для Windows
+    if (init_winsock() != 0) {
+        printf("WSAStartup failed\n");
+        return -1;
+    }
+#endif
+
     const char *host = (argc > 1 ? argv[1] : "127.0.0.1");
-    // const char *host = (argc > 1 ? argv[1] : "host.docker.internal"); // for
-    // docker + windows
 
     printf("host=%s", host);
     int s1 = -1, s2 = -1;
@@ -216,5 +246,11 @@ int main(int argc, char **argv) {
 
     cl(&s1);
     cl(&s2);
+
+#ifdef _WIN32
+    // Завершение работы с WinSock для Windows
+    cleanup_winsock();
+#endif
+
     return 0;
 }
