@@ -87,11 +87,12 @@ void child_sigterm(int sig) {
 }
 
 int main(int argc, char **argv) {
+
     if (!XInitThreads()) {
+
         fprintf(stderr, "XInitThreads failed\n");
         return EXIT_FAILURE;
     }
-
     g_display = XOpenDisplay(NULL);
     if (!g_display) {
         fprintf(stderr, "Cannot open display\n");
@@ -337,26 +338,33 @@ void get_screen_resolution(int *width, int *height) {
     *height = HeightOfScreen(screen);
 }
 int get_pixel_color(int x, int y, int *r, int *g, int *b) {
+    // Синхронизируемся с X-сервером, чтобы гарантировать актуальность данных
     XSync(g_display, False);
 
-    int sw, sh;
-    get_screen_resolution(&sw, &sh);
+    // Получаем размеры экрана
+    int sw = WidthOfScreen(DefaultScreenOfDisplay(g_display));
+    int sh = HeightOfScreen(DefaultScreenOfDisplay(g_display));
+
+    // Проверяем, что координаты внутри экрана
     if (x < 0 || x >= sw || y < 0 || y >= sh) {
-        fprintf(stderr, "Coordinates out of bounds\n");
+        fprintf(stderr, "Coordinates out of bounds (%d,%d) vs %dx%d\n", x, y,
+                sw, sh);
         return -1;
     }
 
-    XImage *img = XGetImage(g_display, g_rootwin, x, y, // координаты
-                            1, 1, // ширина и высота
-                            AllPlanes, ZPixmap);
+    // Захватываем 1×1 пиксель корневого окна
+    XImage *img =
+        XGetImage(g_display, g_rootwin, x, y, 1, 1, AllPlanes, ZPixmap);
     if (!img) {
         fprintf(stderr, "XGetImage failed: BadMatch?\n");
         return -1;
     }
 
+    // Получаем значение пикселя
     unsigned long pixel = XGetPixel(img, 0, 0);
     XDestroyImage(img);
 
+    // Переводим в RGB через колормэп
     XColor xc;
     Colormap cmap = DefaultColormap(g_display, DefaultScreen(g_display));
     xc.pixel = pixel;
