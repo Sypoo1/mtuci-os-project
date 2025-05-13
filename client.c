@@ -31,27 +31,38 @@ void read_greeting(int sd) {
 }
 
 int conn(const char *h, int p) {
-    int sd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sd < 0) {
-        perror("socket");
+    struct addrinfo hints, *res, *rp;
+    char port_str[16];
+    int sd = -1;
+
+    snprintf(port_str, sizeof(port_str), "%d", p);
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;       // Только IPv4
+    hints.ai_socktype = SOCK_STREAM; // TCP
+
+    int err = getaddrinfo(h, port_str, &hints, &res);
+    if (err != 0) {
+        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(err));
         return -1;
     }
 
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(p);
+    for (rp = res; rp != NULL; rp = rp->ai_next) {
+        sd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (sd == -1)
+            continue;
 
-    if (inet_pton(AF_INET, h, &addr.sin_addr) != 1) {
-        fprintf(stderr, "inet_pton: invalid address '%s'\n", h);
+        if (connect(sd, rp->ai_addr, rp->ai_addrlen) != -1)
+            break; // Успешное подключение
+
         close(sd);
-        return -1;
+        sd = -1;
     }
 
-    if (connect(sd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    freeaddrinfo(res);
+
+    if (sd == -1) {
         perror("connect");
-        close(sd);
-        return -1;
     }
 
     return sd;
