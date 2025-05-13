@@ -11,9 +11,9 @@ if len(sys.argv) != 2:
     print(f"Usage: {sys.argv[0]} <remote-file-path>")
     sys.exit(1)
 
-filename = sys.argv[1] + "\n"
+filename = "DISCONNECT" + "\n"
 
-# Засекаем время начала выполнения
+
 start_time = time.time()
 
 with socket.create_connection((SERVER, PORT)) as sock:
@@ -24,9 +24,8 @@ with socket.create_connection((SERVER, PORT)) as sock:
             break
         sys.stdout.buffer.write(data)
 
-# Засекаем время окончания выполнения
 end_time = time.time()
 
-# Вычисляем и выводим время выполнения
+
 execution_time = end_time - start_time
 print(f"Execution time: {execution_time:.5f} seconds")
