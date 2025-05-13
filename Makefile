@@ -1,13 +1,14 @@
 CC = gcc
-CFLAGS = -g
+CFLAGS = -g -pthread
 LDFLAGS = -lX11
-BINS = server client
-OBJS = server.o myqueue.o
 
-all: $(BINS)
+all: server1 server2 client
 
-server: $(OBJS)
+server1: server1.o myqueue.o
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+server2: server2.o myqueue.o
+	$(CC) $(CFLAGS) -o $@ $^
 
 client: client.o
 	$(CC) $(CFLAGS) -o $@ $<
@@ -16,4 +17,4 @@ client: client.o
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -rf *.dSYM $(BINS)
+	rm -f *.o server1 server2 client

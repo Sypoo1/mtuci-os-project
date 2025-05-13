@@ -182,46 +182,76 @@ void *thread_function(void *arg) {
 
 void *handle_connection(void *p_client_socket) {
     int client_socket = *(int *)p_client_socket;
-    char buffer[BUFFSIZE];
-    ssize_t bytes_read;
-    int msgsize = 0;
-    char actualpath[PATH_MAX + 1];
+    free(p_client_socket);
 
-    // Read filename
-    while ((bytes_read = read(client_socket, buffer + msgsize,
-                              sizeof(buffer) - msgsize)) > 0) {
-        msgsize += bytes_read;
-        if (msgsize > BUFFSIZE - 1 || buffer[msgsize - 1] == '\n')
+    char recvbuf[BUFFSIZE];
+    char sendbuf[BUFFSIZE];
+    ssize_t rlen;
+
+    while (1) {
+        // Читаем до конца строки
+        size_t total = 0;
+        while ((rlen = read(client_socket, recvbuf + total, 1)) > 0) {
+            if (recvbuf[total] == '\n' || total + 1 >= BUFFSIZE) {
+                recvbuf[total] = '\0';
+                break;
+            }
+            total += rlen;
+        }
+        if (rlen <= 0) {
+            // Клиент оборвал соединение
+            close(client_socket);
+            return NULL;
+        }
+
+        // Получаем текущее время
+        char timestamp[64];
+        get_timestamp(timestamp, sizeof(timestamp));
+
+        // Разбор команды
+        if (strcmp(recvbuf, "CONNECT") == 0) {
+            snprintf(sendbuf, sizeof(sendbuf),
+                     "%s OK Connected\n", timestamp);
+            write(client_socket, sendbuf, strlen(sendbuf));
+
+        } else if (strcmp(recvbuf, "GET_RESOLUTION") == 0) {
+            char res[64];
+            get_resolution(res);
+            snprintf(sendbuf, sizeof(sendbuf),
+                     "%s OK %s\n", timestamp, res);
+            write(client_socket, sendbuf, strlen(sendbuf));
+
+        } else if (strncmp(recvbuf, "GET_PIXEL", 9) == 0) {
+            int x, y;
+            if (sscanf(recvbuf + 9, "%d %d", &x, &y) == 2) {
+                char color[32];
+                get_pixel_color(x, y, color);
+                snprintf(sendbuf, sizeof(sendbuf),
+                         "%s OK %s\n", timestamp, color);
+            } else {
+                snprintf(sendbuf, sizeof(sendbuf),
+                         "%s ERROR Invalid parameters\n", timestamp);
+            }
+            write(client_socket, sendbuf, strlen(sendbuf));
+
+        } else if (strcmp(recvbuf, "DISCONNECT") == 0) {
+            snprintf(sendbuf, sizeof(sendbuf),
+                     "%s OK Disconnected\n", timestamp);
+            write(client_socket, sendbuf, strlen(sendbuf));
             break;
-    }
-    check(bytes_read, "recv");
-    buffer[msgsize - 1] = '\0';
-    printf("REQUEST: %s\n", buffer);
 
-    // Resolve path
-    if (realpath(buffer, actualpath) == NULL) {
-        perror("realpath");
-        close(client_socket);
-        return NULL;
-    }
-
-    FILE *fp = fopen(actualpath, "r");
-    if (!fp) {
-        perror("fopen");
-        close(client_socket);
-        return NULL;
-    }
-
-    // Send file contents
-    while ((bytes_read = fread(buffer, 1, BUFFSIZE, fp)) > 0) {
-        printf("sending %zu bytes\n", bytes_read);
-        check((int)write(client_socket, buffer, bytes_read), "write");
+        } else {
+            // Неизвестная команда
+            snprintf(sendbuf, sizeof(sendbuf),
+                     "%s ERROR Unknown command\n", timestamp);
+            write(client_socket, sendbuf, strlen(sendbuf));
+        }
     }
 
     close(client_socket);
-    fclose(fp);
     return NULL;
 }
+
 
 void get_timestamp(char *buf, size_t len) {
     time_t now = time(NULL);
@@ -252,3 +282,4 @@ void get_pixel_color(int x, int y, char *buf) {
     sprintf(buf, "#%02X%02X%02X", r, g, b);
     XCloseDisplay(d);
 }
+
