@@ -25,3 +25,4 @@ gcc client.c -o client -lws2_32
 
 
 ifconfig for virtual box ip
+./client.exe 192.168.0.104
