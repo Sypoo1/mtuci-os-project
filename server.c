@@ -1,3 +1,5 @@
+#include "myqueue.h"
+#include <X11/Xlib.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -15,8 +17,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "myqueue.h"
-
 #define SERVERPORT 8001
 #define BUFFSIZE 4096
 #define SOCKETERROR -1
@@ -26,6 +26,17 @@
 static pid_t child_pid = 0;
 static int lock_fd = -1;
 static int server_socket = -1;
+
+typedef struct {
+    int client_socket;
+    char command_type[50]; // "resolution" или "pixel_color"
+    int x, y;              // Координаты для pixel_color
+    char last_value[256]; // Последнее отправленное значение
+} ClientSubscription;
+
+ClientSubscription subscriptions[100];
+int num_subscriptions = 0;
+pthread_mutex_t subscriptions_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 pthread_t thread_pool[THREAD_POOL_SIZE];
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -40,6 +51,9 @@ int server_loop(void);
 bool ensure_single_instance(void);
 void parent_sigint(int sig);
 void child_sigterm(int sig);
+void get_resolution(char *buffer);
+void get_pixel_color(int x, int y, char *buffer);
+void *update_checker(void *arg);
 
 // Ensure only one instance via lock file (parent only)
 bool ensure_single_instance(void) {
@@ -122,6 +136,37 @@ int main(int argc, char **argv) {
     return 0;
 }
 
+void *update_checker(void *arg) {
+    while (1) {
+        sleep(1);
+        pthread_mutex_lock(&subscriptions_mutex);
+        for (int i = 0; i < num_subscriptions; i++) {
+            ClientSubscription sub = subscriptions[i];
+            char current_value[256];
+            if (strcmp(sub.command_type, "resolution") == 0) {
+                get_resolution(current_value);
+                if (strcmp(current_value, sub.last_value) != 0) {
+                    char response[256];
+                    sprintf(response, "UPDATE RESOLUTION %s", current_value);
+                    write(sub.client_socket, response, strlen(response));
+                    strcpy(subscriptions[i].last_value, current_value);
+                }
+            } else if (strcmp(sub.command_type, "pixel_color") == 0) {
+                get_pixel_color(sub.x, sub.y, current_value);
+                if (strcmp(current_value, sub.last_value) != 0) {
+                    char response[256];
+                    sprintf(response, "UPDATE PIXEL_COLOR %d %d %s", sub.x,
+                            sub.y, current_value);
+                    write(sub.client_socket, response, strlen(response));
+                    strcpy(subscriptions[i].last_value, current_value);
+                }
+            }
+        }
+        pthread_mutex_unlock(&subscriptions_mutex);
+    }
+    return NULL;
+}
+
 int server_loop(void) {
     int client_socket, addr_size;
     SA_IN server_addr, client_addr;
@@ -130,6 +175,9 @@ int server_loop(void) {
     for (int i = 0; i < THREAD_POOL_SIZE; i++) {
         pthread_create(&thread_pool[i], NULL, thread_function, NULL);
     }
+
+    pthread_t checker_thread;
+    pthread_create(&checker_thread, NULL, update_checker, NULL);
 
     check((server_socket = socket(AF_INET, SOCK_STREAM, 0)),
           "Failed to create a socket");
@@ -200,45 +248,91 @@ void *thread_function(void *arg) {
 }
 
 void *handle_connection(void *p_client_socket) {
-    // printf("handle_connection() with server_socket=%d\n",server_socket);
     int client_socket = *(int *)p_client_socket;
+    free(p_client_socket);
     char buffer[BUFFSIZE];
     ssize_t bytes_read;
-    int msgsize = 0;
-    char actualpath[PATH_MAX + 1];
 
-    // Read filename
-    while ((bytes_read = read(client_socket, buffer + msgsize,
-                              sizeof(buffer) - msgsize)) > 0) {
-        msgsize += bytes_read;
-        if (msgsize > BUFFSIZE - 1 || buffer[msgsize - 1] == '\n')
+    while (bytes_read = read(client_socket, buffer, BUFFSIZE - 1)) {
+        if (bytes_read <= 0)
             break;
-    }
-    check(bytes_read, "recv");
-    buffer[msgsize - 1] = '\0';
-    // printf("REQUEST: %s\n", buffer);
+        buffer[bytes_read] = '\0';
 
-    // Resolve path
-    if (realpath(buffer, actualpath) == NULL) {
-        perror("realpath");
-        close(client_socket);
-        return NULL;
+        if (strncmp(buffer, "GET resolution", 14) == 0) {
+            char resolution[256];
+            get_resolution(resolution);
+            char response[256];
+            sprintf(response, "RESOLUTION %s", resolution);
+            write(client_socket, response, strlen(response));
+
+            pthread_mutex_lock(&subscriptions_mutex);
+            subscriptions[num_subscriptions].client_socket = client_socket;
+            strcpy(subscriptions[num_subscriptions].command_type, "resolution");
+            strcpy(subscriptions[num_subscriptions].last_value, resolution);
+            num_subscriptions++;
+            pthread_mutex_unlock(&subscriptions_mutex);
+        } else if (strncmp(buffer, "GET pixel_color", 15) == 0) {
+            int x, y;
+            sscanf(buffer, "GET pixel_color %d %d", &x, &y);
+            char color[20];
+            get_pixel_color(x, y, color);
+            char response[256];
+            sprintf(response, "PIXEL_COLOR %d %d %s", x, y, color);
+            write(client_socket, response, strlen(response));
+
+            pthread_mutex_lock(&subscriptions_mutex);
+            subscriptions[num_subscriptions].client_socket = client_socket;
+            strcpy(subscriptions[num_subscriptions].command_type,
+                   "pixel_color");
+            subscriptions[num_subscriptions].x = x;
+            subscriptions[num_subscriptions].y = y;
+            strcpy(subscriptions[num_subscriptions].last_value, color);
+            num_subscriptions++;
+            pthread_mutex_unlock(&subscriptions_mutex);
+        } else if (strncmp(buffer, "DISCONNECT", 10) == 0) {
+            write(client_socket, "DISCONNECTED", 12);
+            break;
+        }
     }
 
-    FILE *fp = fopen(actualpath, "r");
-    if (!fp) {
-        perror("fopen");
-        close(client_socket);
-        return NULL;
+    pthread_mutex_lock(&subscriptions_mutex);
+    for (int i = 0; i < num_subscriptions; i++) {
+        if (subscriptions[i].client_socket == client_socket) {
+            subscriptions[i] = subscriptions[num_subscriptions - 1];
+            num_subscriptions--;
+            i--;
+        }
     }
-
-    // Send file contents
-    while ((bytes_read = fread(buffer, 1, BUFFSIZE, fp)) > 0) {
-        // printf("sending %zu bytes\n", bytes_read);
-        check((int)write(client_socket, buffer, bytes_read), "write");
-    }
+    pthread_mutex_unlock(&subscriptions_mutex);
 
     close(client_socket);
-    fclose(fp);
     return NULL;
+}
+
+void get_resolution(char *buffer) {
+    Display *d = XOpenDisplay(NULL);
+    if (!d) {
+        strcpy(buffer, "Error");
+        return;
+    }
+    Screen *s = DefaultScreenOfDisplay(d);
+    sprintf(buffer, "%dx%d", s->width, s->height);
+    XCloseDisplay(d);
+}
+
+void get_pixel_color(int x, int y, char *buffer) {
+    Display *d = XOpenDisplay(NULL);
+    if (!d) {
+        strcpy(buffer, "Error");
+        return;
+    }
+    XColor color;
+    XImage *image = XGetImage(d, RootWindow(d, DefaultScreen(d)), x, y, 1, 1,
+                              AllPlanes, ZPixmap);
+    color.pixel = XGetPixel(image, 0, 0);
+    XFree(image);
+    XQueryColor(d, DefaultColormap(d, DefaultScreen(d)), &color);
+    sprintf(buffer, "#%02X%02X%02X", color.red >> 8, color.green >> 8,
+            color.blue >> 8);
+    XCloseDisplay(d);
 }

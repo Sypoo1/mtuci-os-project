@@ -1,52 +1,62 @@
-#include <arpa/inet.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <arpa/inet.h>
+#include <pthread.h>
 
-#define SERVER_IP "127.0.0.1"
-#define SERVER_PORT 8001
-#define BUFFSIZE 4096
+#define BUFFER_SIZE 1024
 
-int main(int argc, char **argv) {
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <file-path-on-server>\n", argv[0]);
-        return 1;
+void *receive_handler(void *arg) {
+    int sock = *(int *)arg;
+    char buffer[BUFFER_SIZE];
+    while (1) {
+        ssize_t bytes_received = recv(sock, buffer, BUFFER_SIZE - 1, 0);
+        if (bytes_received <= 0) {
+            printf("Сервер отключился\n");
+            exit(0);
+        }
+        buffer[bytes_received] = '\0';
+        printf("Обновление: %s\n", buffer);
     }
+}
 
+int main() {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) {
-        perror("socket");
-        return 1;
+    struct sockaddr_in serv_addr;
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(8001);
+    inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr);
+
+    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr))) {
+        perror("Ошибка подключения");
+        exit(1);
     }
 
-    struct sockaddr_in serv_addr = {.sin_family = AF_INET,
-                                    .sin_port = htons(SERVER_PORT)};
-    inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr);
+    pthread_t thread_id;
+    pthread_create(&thread_id, NULL, receive_handler, &sock);
 
-    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        perror("connect");
-        close(sock);
-        return 1;
-    }
+    printf("Команды:\n");
+    printf("GET resolution - разрешение экрана\n");
+    printf("GET pixel_color X Y - цвет пикселя\n");
+    printf("DISCONNECT - отключиться\n");
 
-    // Send the filename + newline
-    char request[BUFFSIZE];
-    snprintf(request, sizeof(request), "%s\n", argv[1]);
-    if (write(sock, request, strlen(request)) < 0) {
-        perror("write");
-        close(sock);
-        return 1;
-    }
+    char command[BUFFER_SIZE];
+    while (1) {
+        fgets(command, BUFFER_SIZE, stdin);
+        command[strcspn(command, "\n")] = '\0';
 
-    // Read back the file contents
-    ssize_t n;
-    char buffer[BUFFSIZE];
-    while ((n = read(sock, buffer, sizeof(buffer))) > 0) {
-        fwrite(buffer, 1, n, stdout);
+        if (strcmp(command, "DISCONNECT") == 0) {
+            send(sock, command, strlen(command), 0);
+            break;
+        }
+
+        if (strncmp(command, "GET ", 4) == 0) {
+            send(sock, command, strlen(command), 0);
+        } else {
+            printf("Неизвестная команда\n");
+        }
     }
-    if (n < 0)
-        perror("read");
 
     close(sock);
     return 0;
