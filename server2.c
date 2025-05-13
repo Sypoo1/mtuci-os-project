@@ -41,7 +41,8 @@ bool ensure_single_instance(void);
 void parent_sigint(int sig);
 void child_sigterm(int sig);
 static void get_timestamp(char *out, size_t len);
-
+pid_t get_server_pid(void);
+int get_thread_count(void);
 
 // Ensure only one instance via lock file (parent only)
 bool ensure_single_instance(void) {
@@ -240,40 +241,22 @@ void *handle_connection(void *p_client_socket) {
 
         printf("REQUEST: %s\n", buffer);
 
-        if (strncmp(buffer, "GET_RESOLUTION", 14) == 0) {
+        if (strncmp(buffer, "GET_PID", 7) == 0) {
             char ts[64];
-            int width, height;
             get_timestamp(ts, sizeof(ts));
-            get_screen_resolution(&width, &height);
-
+            pid_t pid = get_server_pid();
             int len =
-                snprintf(reply, sizeof(reply), "%dx%d %s\n", width, height, ts);
+                snprintf(reply, sizeof(reply), "PID %d %s\n", (int)pid, ts);
             write(client_socket, reply, len);
-
-            // Пример использования GET_PIXEL
-        } else if (strncmp(buffer, "GET_PIXEL", 9) == 0) {
+        }
+        // --- новая ветка для GET_THREAD_COUNT ---
+        else if (strncmp(buffer, "GET_THREAD_COUNT", 16) == 0) {
             char ts[64];
-            int r, g, b;
             get_timestamp(ts, sizeof(ts));
-
-            // Извлекаем координаты x и y из запроса
-            int x, y;
-            if (sscanf(buffer, "GET_PIXEL %d %d", &x, &y) != 2) {
-                fprintf(stderr, "Invalid GET_PIXEL format\n");
-                int len = snprintf(reply, sizeof(reply),
-                                   "Invalid GET_PIXEL format %s\n", ts);
-                write(client_socket, reply, len);
-            } else {
-                if (get_pixel_color(x, y, &r, &g, &b) == 0) {
-                    int len = snprintf(reply, sizeof(reply), "%d %d %d %s\n", r,
-                                       g, b, ts);
-                    write(client_socket, reply, len);
-                } else {
-                    int len = snprintf(reply, sizeof(reply),
-                                       "Error getting pixel color %s\n", ts);
-                    write(client_socket, reply, len);
-                }
-            }
+            int cnt = get_thread_count();
+            int len =
+                snprintf(reply, sizeof(reply), "THREAD_COUNT %d %s\n", cnt, ts);
+            write(client_socket, reply, len);
 
             // DISCONNECT — отсылаем OK и выходим
         } else if (strncmp(buffer, "DISCONNECT", 10) == 0) {
@@ -298,4 +281,27 @@ static void get_timestamp(char *out, size_t len) {
     struct tm tm;
     localtime_r(&now, &tm);
     strftime(out, len, "%Y-%m-%d %H:%M:%S", &tm);
+}
+
+pid_t get_server_pid(void) { return getpid(); }
+
+int get_thread_count(void) {
+    FILE *fp = fopen("/proc/self/status", "r");
+    if (!fp) {
+        perror("fopen");
+        return -1;
+    }
+
+    char line[256];
+    int count = -1;
+
+    while (fgets(line, sizeof(line), fp)) {
+        if (strncmp(line, "Threads:", 8) == 0) {
+            sscanf(line + 8, "%d", &count);
+            break;
+        }
+    }
+
+    fclose(fp);
+    return count;
 }
