@@ -1,27 +1,28 @@
-/* server.c: single-instance + parent-child restart for Linux using /tmp/my_server1.lock */
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
+/* server.c: single-instance + parent-child restart for Linux using
+ * /tmp/my_server1.lock */
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <signal.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <signal.h>
-#include <stdbool.h>
-#include <limits.h>
+#include <unistd.h>
 
 #include "myqueue.h"
 
-#define SERVERPORT       8001
-#define BUFFSIZE         4096
-#define SOCKETERROR     -1
-#define SERVERBACKLOG   100
+#define SERVERPORT 8001
+#define BUFFSIZE 4096
+#define SOCKETERROR -1
+#define SERVERBACKLOG 100
 #define THREAD_POOL_SIZE 20
 
 static pid_t child_pid = 0;
@@ -34,9 +35,9 @@ pthread_cond_t condition_var = PTHREAD_COND_INITIALIZER;
 typedef struct sockaddr_in SA_IN;
 typedef struct sockaddr SA;
 
-void* handle_connection(void* p_client_socket);
-int check(int exp, const char* msg);
-void* thread_function(void* arg);
+void *handle_connection(void *p_client_socket);
+int check(int exp, const char *msg);
+void *thread_function(void *arg);
 int server_loop(void);
 bool ensure_single_instance(void);
 void parent_sigint(int sig);
@@ -44,185 +45,184 @@ void child_sigterm(int sig);
 
 // Ensure only one instance via lock file (parent only)
 bool ensure_single_instance(void) {
-    lock_fd = check(open("/tmp/my_server1.lock", O_CREAT | O_RDWR, 0666), "open lockfile");
-    if (flock(lock_fd, LOCK_EX | LOCK_NB) < 0) {
-        perror("flock");
-        close(lock_fd);
-        return false;
-    }
-    return true;
+  lock_fd = check(open("/tmp/my_server1.lock", O_CREAT | O_RDWR, 0666),
+                  "open lockfile");
+  if (flock(lock_fd, LOCK_EX | LOCK_NB) < 0) {
+    perror("flock");
+    close(lock_fd);
+    return false;
+  }
+  return true;
 }
 
 // Parent SIGINT: stop child, cleanup
 void parent_sigint(int sig) {
-    if (child_pid > 0) {
-        kill(child_pid, SIGTERM);
-        waitpid(child_pid, NULL, 0);
-    }
-    if (server_sock != -1) close(server_sock);
-    if (lock_fd != -1) close(lock_fd);
-    unlink("/tmp/my_server1.lock");
-    exit(EXIT_SUCCESS);
+  if (child_pid > 0) {
+    kill(child_pid, SIGTERM);
+    waitpid(child_pid, NULL, 0);
+  }
+  if (server_sock != -1)
+    close(server_sock);
+  if (lock_fd != -1)
+    close(lock_fd);
+  unlink("/tmp/my_server1.lock");
+  exit(EXIT_SUCCESS);
 }
 
 // Child SIGTERM: exit gracefully
 void child_sigterm(int sig) {
-    if (server_sock != -1) close(server_sock);
-    exit(EXIT_SUCCESS);
+  if (server_sock != -1)
+    close(server_sock);
+  exit(EXIT_SUCCESS);
 }
 
-int main(int argc, char** argv) {
-    signal(SIGINT, parent_sigint);
+int main(int argc, char **argv) {
+  signal(SIGINT, parent_sigint);
 
-    // Child mode
-    if (argc == 2 && strcmp(argv[1], "--child") == 0) {
-        signal(SIGTERM, child_sigterm);
-        return server_loop();
-    }
+  // Child mode
+  if (argc == 2 && strcmp(argv[1], "--child") == 0) {
+    signal(SIGTERM, child_sigterm);
+    return server_loop();
+  }
 
-    // Parent mode
-    if (!ensure_single_instance()) {
-        fprintf(stderr, "Another instance is running.\n");
-        return 1;
-    }
+  // Parent mode
+  if (!ensure_single_instance()) {
+    fprintf(stderr, "Another instance is running.\n");
+    return 1;
+  }
 
-    while (1) {
-        pid_t pid = fork();
-        if (pid < 0) {
-            perror("fork");
-            exit(EXIT_FAILURE);
-        }
-        if (pid == 0) {
-            execlp(argv[0], argv[0], "--child", NULL);
-            perror("execlp");
-            _exit(EXIT_FAILURE);
-        }
-        child_pid = pid;
-        int status;
-        waitpid(child_pid, &status, 0);
-        fprintf(stderr, "Child exited (status %d), restarting in 1s...\n", WEXITSTATUS(status));
-        sleep(1);
+  while (1) {
+    pid_t pid = fork();
+    if (pid < 0) {
+      perror("fork");
+      exit(EXIT_FAILURE);
     }
-    return 0;
+    if (pid == 0) {
+      execlp(argv[0], argv[0], "--child", NULL);
+      perror("execlp");
+      _exit(EXIT_FAILURE);
+    }
+    child_pid = pid;
+    int status;
+    waitpid(child_pid, &status, 0);
+    fprintf(stderr, "Child exited (status %d), restarting in 1s...\n",
+            WEXITSTATUS(status));
+    sleep(1);
+  }
+  return 0;
 }
 
+int server_loop(void) {
+  int server_socket, client_socket, addr_size;
+  SA_IN server_addr, client_addr;
 
+  // create a banch of threads to handle connections
+  for (int i = 0; i < THREAD_POOL_SIZE; i++) {
+    pthread_create(&thread_pool[i], NULL, thread_function, NULL);
+  }
 
-int server_loop(void)
-{
-    int server_socket, client_socket, addr_size;
-    SA_IN server_addr, client_addr;
+  check((server_socket = socket(AF_INET, SOCK_STREAM, 0)),
+        "Failed to create a socket");
 
-    // create a banch of threads to handle connections
-    for(int i = 0; i < THREAD_POOL_SIZE; i++){
-        pthread_create(&thread_pool[i], NULL, thread_function, NULL);
-    }
+  // Set SO_REUSEADDR option
+  int opt = 1;
+  check(setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)),
+        "setsockopt(SO_REUSEADDR) failed");
 
-    check((server_socket = socket(AF_INET, SOCK_STREAM, 0)),
-            "Failed to create a socket");
-    
-    // Set SO_REUSEADDR option
-    int opt = 1;
-    check(setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)),
-      "setsockopt(SO_REUSEADDR) failed");
+  // initialize the address struct
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_addr.s_addr = INADDR_ANY;
+  server_addr.sin_port = htons(SERVERPORT);
 
-    // initialize the address struct
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(SERVERPORT);
+  check(bind(server_socket, (SA *)&server_addr, sizeof(server_addr)),
+        "Bind Failed!");
+  check(listen(server_socket, SERVERBACKLOG), "Listen Failed!");
 
-    check(bind(server_socket, (SA*)&server_addr, sizeof(server_addr)),
-            "Bind Failed!");
-    check(listen(server_socket, SERVERBACKLOG),
-            "Listen Failed!");
+  while (true) {
 
+    printf("Waiting for connections...\n");
+    // wait for, and eventually accept any incoming connections
+    addr_size = sizeof(SA_IN);
+    check(client_socket = accept(server_socket, (SA *)&client_addr,
+                                 (socklen_t *)&addr_size),
+          "accept failed");
+    printf("Connected!\n");
 
-    while(true){
+    int *pclient = malloc(sizeof(int));
+    *pclient = client_socket;
 
-        printf("Waiting for connections...\n");
-        // wait for, and eventually accept any incoming connections
-        addr_size = sizeof(SA_IN);
-        check(client_socket =
-                accept(server_socket, (SA*)&client_addr, (socklen_t*)&addr_size),
-                "accept failed");
-        printf("Connected!\n");
+    // make sure only one thread messes with queue
+    pthread_mutex_lock(&mutex);
+    enqueue(pclient);
+    pthread_cond_signal(&condition_var);
+    pthread_mutex_unlock(&mutex);
+  }
 
-        int *pclient = malloc(sizeof(int));
-        *pclient = client_socket;
-
-        //make sure only one thread messes with queue
-        pthread_mutex_lock(&mutex);
-        enqueue(pclient);
-        pthread_cond_signal(&condition_var);
-        pthread_mutex_unlock(&mutex);
-    }
-
-    return 0;
+  return 0;
 }
 //---------------------------------------------------------------------------------------------------------------------
-int check(int exp, const char* msg) {
-    if (exp == SOCKETERROR) {
-        perror(msg);
-        exit(EXIT_FAILURE);
-    }
-    return exp;
+int check(int exp, const char *msg) {
+  if (exp == SOCKETERROR) {
+    perror(msg);
+    exit(EXIT_FAILURE);
+  }
+  return exp;
 }
 
-
-void * thread_function(void *arg){
-    while (true){
-        int *pclient;
-        pthread_mutex_lock(&mutex);
-        if ((pclient = dequeue()) == NULL){
-            pthread_cond_wait(&condition_var, &mutex);
-            // try again
-            pclient = dequeue();
-        }
-        pthread_mutex_unlock(&mutex);
-
-        handle_connection(pclient);
+void *thread_function(void *arg) {
+  while (true) {
+    int *pclient;
+    pthread_mutex_lock(&mutex);
+    if ((pclient = dequeue()) == NULL) {
+      pthread_cond_wait(&condition_var, &mutex);
+      // try again
+      pclient = dequeue();
     }
+    pthread_mutex_unlock(&mutex);
+
+    handle_connection(pclient);
+  }
 }
 
-void* handle_connection(void* p_client_socket) {
-    int client_socket = *(int*)p_client_socket;
-    char buffer[BUFFSIZE];
-    ssize_t bytes_read;
-    int msgsize = 0;
-    char actualpath[PATH_MAX+1];
+void *handle_connection(void *p_client_socket) {
+  int client_socket = *(int *)p_client_socket;
+  char buffer[BUFFSIZE];
+  ssize_t bytes_read;
+  int msgsize = 0;
+  char actualpath[PATH_MAX + 1];
 
-    // Read filename
-    while ((bytes_read = read(client_socket, buffer+msgsize, sizeof(buffer)-msgsize)) > 0) {
-        msgsize += bytes_read;
-        if (msgsize > BUFFSIZE-1 || buffer[msgsize-1] == '\n') break;
-    }
-    check(bytes_read, "recv");
-    buffer[msgsize-1] = '\0';
-    printf("REQUEST: %s\n", buffer);
+  // Read filename
+  while ((bytes_read = read(client_socket, buffer + msgsize,
+                            sizeof(buffer) - msgsize)) > 0) {
+    msgsize += bytes_read;
+    if (msgsize > BUFFSIZE - 1 || buffer[msgsize - 1] == '\n')
+      break;
+  }
+  check(bytes_read, "recv");
+  buffer[msgsize - 1] = '\0';
+  printf("REQUEST: %s\n", buffer);
 
-    // Resolve path
-    if (realpath(buffer, actualpath) == NULL) {
-        perror("realpath");
-        close(client_socket);
-        return NULL;
-    }
-
-    FILE* fp = fopen(actualpath, "r");
-    if (!fp) {
-        perror("fopen");
-        close(client_socket);
-        return NULL;
-    }
-
-
-    // Send file contents
-    while ((bytes_read = fread(buffer, 1, BUFFSIZE, fp)) > 0) {
-        printf("sending %zu bytes\n", bytes_read);
-        check((int)write(client_socket, buffer, bytes_read), "write");
-    }
-
-
+  // Resolve path
+  if (realpath(buffer, actualpath) == NULL) {
+    perror("realpath");
     close(client_socket);
-    fclose(fp);
     return NULL;
+  }
+
+  FILE *fp = fopen(actualpath, "r");
+  if (!fp) {
+    perror("fopen");
+    close(client_socket);
+    return NULL;
+  }
+
+  // Send file contents
+  while ((bytes_read = fread(buffer, 1, BUFFSIZE, fp)) > 0) {
+    printf("sending %zu bytes\n", bytes_read);
+    check((int)write(client_socket, buffer, bytes_read), "write");
+  }
+
+  close(client_socket);
+  fclose(fp);
+  return NULL;
 }
