@@ -12,8 +12,24 @@
 #define S2_PORT   8002
 #define BS        4096
 
-// Устанавливает TCP-соединение с хостом h и портом p.
-// Возвращает файловый дескриптор сокета или -1 при ошибке.
+// Читает одну строку (до '\n') из сокета и печатает её
+void read_greeting(int sd) {
+    char buf[BS];
+    size_t total = 0;
+    ssize_t n;
+    while ((n = read(sd, buf + total, sizeof(buf) - total - 1)) > 0) {
+        total += n;
+        if (buf[total - 1] == '\n' || total >= sizeof(buf) - 1)
+            break;
+    }
+    if (n < 0) {
+        perror("read greeting");
+        return;
+    }
+    buf[total] = '\0';
+    printf("%s", buf);
+}
+
 int conn(const char *h, int p) {
     int sd = socket(AF_INET, SOCK_STREAM, 0);
     if (sd < 0) {
@@ -41,7 +57,6 @@ int conn(const char *h, int p) {
     return sd;
 }
 
-// Закрывает соединение и помечает дескриптор как -1
 void cl(int *s) {
     if (*s != -1) {
         close(*s);
@@ -49,7 +64,6 @@ void cl(int *s) {
     }
 }
 
-// Отправляет команду c на сокет sd и выводит ответ до первой '\n'
 void cmd(int sd, const char *c) {
     if (sd < 0) {
         puts("Not connected");
@@ -57,14 +71,13 @@ void cmd(int sd, const char *c) {
     }
 
     char buf[BS];
-    // Отправляем команду с завершающим '\n'
     int cmd_len = snprintf(buf, sizeof(buf), "%s\n", c);
     if (write(sd, buf, cmd_len) != cmd_len) {
         perror("write");
         return;
     }
 
-    // Читаем ответ построчно (до '\n')
+    // читаем ответ до первой '\n'
     size_t total = 0;
     ssize_t n;
     while ((n = read(sd, buf + total, sizeof(buf) - total - 1)) > 0) {
@@ -81,7 +94,7 @@ void cmd(int sd, const char *c) {
 }
 
 void menu() {
-    puts("Menu:");
+    puts("\nMenu:");
     puts(" 1) Connect1");
     puts(" 2) Connect2");
     puts(" 3) Disconnect1");
@@ -110,7 +123,12 @@ int main(int argc, char **argv) {
             case 1:
                 if (s1 < 0) {
                     s1 = conn(host, S1_PORT);
-                    puts(s1 >= 0 ? "Connected to port 8001" : "Failed to connect1");
+                    if (s1 >= 0) {
+                        puts("Connected to port %d, server says:", S1_PORT);
+                        read_greeting(s1);
+                    } else {
+                        puts("Failed to connect1");
+                    }
                 } else {
                     puts("Already connected1");
                 }
@@ -119,7 +137,12 @@ int main(int argc, char **argv) {
             case 2:
                 if (s2 < 0) {
                     s2 = conn(host, S2_PORT);
-                    puts(s2 >= 0 ? "Connected to port 8002" : "Failed to connect2");
+                    if (s2 >= 0) {
+                        puts("Connected to port %d, server says:", S2_PORT);
+                        read_greeting(s2);
+                    } else {
+                        puts("Failed to connect2");
+                    }
                 } else {
                     puts("Already connected2");
                 }
@@ -128,11 +151,13 @@ int main(int argc, char **argv) {
             case 3:
                 cmd(s1, "DISCONNECT");
                 cl(&s1);
+                puts("Disconnected from port %d, server says:", S1_PORT);
                 break;
 
             case 4:
                 cmd(s2, "DISCONNECT");
                 cl(&s2);
+                puts("Disconnected from port %d, server says:", S2_PORT);
                 break;
 
             case 5:
@@ -148,7 +173,7 @@ int main(int argc, char **argv) {
                 } else {
                     puts("Invalid input");
                 }
-                // Сбросим остаток строки после scanf
+                // очистка stdin после scanf
                 int ch;
                 while ((ch = getchar()) != '\n' && ch != EOF);
                 break;
@@ -173,7 +198,6 @@ int main(int argc, char **argv) {
         }
     }
 
-    // В случае выхода из цикла
     cl(&s1);
     cl(&s2);
     return 0;
