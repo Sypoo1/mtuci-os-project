@@ -24,5 +24,9 @@ docker run -it --rm windows_client
 gcc client.c -o client -lws2_32
 
 
+# Virtual box
+Bridged-сеть или Host-only
 ifconfig for virtual box ip
+
+
 ./client.exe 192.168.0.104

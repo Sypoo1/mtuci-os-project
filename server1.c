@@ -29,6 +29,9 @@ static pid_t child_pid = 0;
 static int lock_fd = -1;
 static int server_socket = -1;
 
+static Display *g_display = NULL;
+static Window g_rootwin = 0;
+
 pthread_t thread_pool[THREAD_POOL_SIZE];
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t condition_var = PTHREAD_COND_INITIALIZER;
@@ -84,6 +87,19 @@ void child_sigterm(int sig) {
 }
 
 int main(int argc, char **argv) {
+    if (!XInitThreads()) {
+        fprintf(stderr, "XInitThreads failed\n");
+        return EXIT_FAILURE;
+    }
+
+    g_display = XOpenDisplay(NULL);
+    if (!g_display) {
+        fprintf(stderr, "Cannot open display\n");
+        return EXIT_FAILURE;
+    }
+    int screen = DefaultScreen(g_display);
+    g_rootwin = XRootWindow(g_display, screen);
+
     // printf("main() with %d arguments:\n", argc);
     // for(int i = 0; i < argc; i++) {
     //     printf("argument %d == %s\n", i+1, argv[i]);
@@ -124,6 +140,9 @@ int main(int argc, char **argv) {
                 WEXITSTATUS(status));
         sleep(1);
     }
+
+    XCloseDisplay(g_display);
+
     return 0;
 }
 
@@ -313,61 +332,38 @@ static void get_timestamp(char *out, size_t len) {
 }
 
 void get_screen_resolution(int *width, int *height) {
-    Display *display = XOpenDisplay(NULL);
-    if (display == NULL) {
-        fprintf(stderr, "Cannot open display\n");
-        return;
-    }
-
-    Screen *screen = DefaultScreenOfDisplay(display);
+    Screen *screen = DefaultScreenOfDisplay(g_display);
     *width = WidthOfScreen(screen);
     *height = HeightOfScreen(screen);
-
-    XCloseDisplay(display);
 }
 int get_pixel_color(int x, int y, int *r, int *g, int *b) {
-    Display *display = XOpenDisplay(NULL);
-    if (!display) {
-        fprintf(stderr, "Cannot open display\n");
+    XSync(g_display, False);
+
+    int sw, sh;
+    get_screen_resolution(&sw, &sh);
+    if (x < 0 || x >= sw || y < 0 || y >= sh) {
+        fprintf(stderr, "Coordinates out of bounds\n");
         return -1;
     }
 
-    Window root = DefaultRootWindow(display);
-
-    // Be sure to get image
-    XSync(display, False);
-
-    int screen_width = 0, screen_height = 0;
-    get_screen_resolution(&screen_width, &screen_height);
-
-    if (x < 0 || x >= screen_width || y < 0 || y >= screen_height) {
-        fprintf(stderr, "Coordinates out of screen bounds\n");
-        XCloseDisplay(display);
+    XImage *img = XGetImage(g_display, g_rootwin, x, y, // координаты
+                            1, 1, // ширина и высота
+                            AllPlanes, ZPixmap);
+    if (!img) {
+        fprintf(stderr, "XGetImage failed: BadMatch?\n");
         return -1;
     }
 
-    // Capture 1×1 pixel
-    XImage *image = XGetImage(display, root, x, y, 1, 1, AllPlanes, ZPixmap);
-    if (!image) {
-        fprintf(stderr, "Cannot get image (BadMatch?)\n");
-        XCloseDisplay(display);
-        return -1;
-    }
+    unsigned long pixel = XGetPixel(img, 0, 0);
+    XDestroyImage(img);
 
-    unsigned long pixel = XGetPixel(image, 0, 0);
-    XDestroyImage(image);
+    XColor xc;
+    Colormap cmap = DefaultColormap(g_display, DefaultScreen(g_display));
+    xc.pixel = pixel;
+    XQueryColor(g_display, cmap, &xc);
 
-    // Getting pixel RGB
-    XColor xcolor;
-    Colormap cmap = DefaultColormap(display, DefaultScreen(display));
-    xcolor.pixel = pixel;
-    XQueryColor(display, cmap, &xcolor);
-
-    // Transfer from 16-bit to 8-bit
-    *r = xcolor.red >> 8;
-    *g = xcolor.green >> 8;
-    *b = xcolor.blue >> 8;
-
-    XCloseDisplay(display);
+    *r = xc.red >> 8;
+    *g = xc.green >> 8;
+    *b = xc.blue >> 8;
     return 0;
 }
