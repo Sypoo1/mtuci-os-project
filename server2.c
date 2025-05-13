@@ -206,6 +206,15 @@ void *handle_connection(void *p_client_socket) {
     int client_socket = *(int *)p_client_socket;
     free(p_client_socket);
 
+    struct sockaddr_in client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+    getpeername(client_socket, (struct sockaddr *)&client_addr, &addr_len);
+
+    char *client_ip = inet_ntoa(client_addr.sin_addr);
+    int client_port = ntohs(client_addr.sin_port);
+
+    printf("Client connected: %s:%d\n", client_ip, client_port);
+
     char buffer[BUFFSIZE];
     char reply[BUFFSIZE];
     ssize_t n;
@@ -271,7 +280,7 @@ void *handle_connection(void *p_client_socket) {
             write(client_socket, "ERROR Unknown command\n", 22);
         }
     }
-    printf("Closing connection");
+    printf("Closing connection with %s:%d\n", client_ip, client_port);
     close(client_socket);
     return NULL;
 }

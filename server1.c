@@ -158,13 +158,11 @@ int server_loop(void) {
     // printf("server_socket=%d\n",server_socket);
     while (true) {
 
-        printf("Waiting for connections...\n");
         // wait for, and eventually accept any incoming connections
         addr_size = sizeof(SA_IN);
         check(client_socket = accept(server_socket, (SA *)&client_addr,
                                      (socklen_t *)&addr_size),
               "accept failed");
-        printf("Connected!\n");
 
         int *pclient = malloc(sizeof(int));
         *pclient = client_socket;
@@ -207,6 +205,15 @@ void *thread_function(void *arg) {
 void *handle_connection(void *p_client_socket) {
     int client_socket = *(int *)p_client_socket;
     free(p_client_socket);
+
+    struct sockaddr_in client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+    getpeername(client_socket, (struct sockaddr *)&client_addr, &addr_len);
+
+    char *client_ip = inet_ntoa(client_addr.sin_addr);
+    int client_port = ntohs(client_addr.sin_port);
+
+    printf("Client connected: %s:%d\n", client_ip, client_port);
 
     char buffer[BUFFSIZE];
     char reply[BUFFSIZE];
@@ -291,7 +298,8 @@ void *handle_connection(void *p_client_socket) {
             write(client_socket, "ERROR Unknown command\n", 22);
         }
     }
-    printf("Closing connection");
+
+    printf("Closing connection with %s:%d\n", client_ip, client_port);
     close(client_socket);
     return NULL;
 }
