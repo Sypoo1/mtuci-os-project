@@ -1,12 +1,12 @@
+#include <arpa/inet.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <arpa/inet.h>
 
-#define SERVER_IP   "127.0.0.1"
+#define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 8001
-#define BUFFSIZE    4096
+#define BUFFSIZE 4096
 
 int main(int argc, char **argv) {
     if (argc != 2) {
@@ -20,13 +20,11 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    struct sockaddr_in serv_addr = {
-        .sin_family = AF_INET,
-        .sin_port   = htons(SERVER_PORT)
-    };
+    struct sockaddr_in serv_addr = {.sin_family = AF_INET,
+                                    .sin_port = htons(SERVER_PORT)};
     inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr);
 
-    if (connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
+    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
         perror("connect");
         close(sock);
         return 1;
@@ -47,7 +45,8 @@ int main(int argc, char **argv) {
     while ((n = read(sock, buffer, sizeof(buffer))) > 0) {
         fwrite(buffer, 1, n, stdout);
     }
-    if (n < 0) perror("read");
+    if (n < 0)
+        perror("read");
 
     close(sock);
     return 0;

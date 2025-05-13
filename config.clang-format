@@ -1,6 +1,9 @@
-BasedOnStyle: K&R
 IndentWidth: 4
 UseTab: Never
-BreakBeforeBraces: K&R
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction: false
+  AfterClass: false
+  AfterControlStatement: false
 AllowShortIfStatementsOnASingleLine: false
 IndentCaseLabels: false

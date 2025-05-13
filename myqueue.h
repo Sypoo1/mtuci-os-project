@@ -2,12 +2,12 @@
 #define MYQUEUE_H_
 
 struct node {
-    struct node* next;
+    struct node *next;
     int *client_socket;
 };
 typedef struct node node_t;
 
 void enqueue(int *client_socket);
-int* dequeue();
+int *dequeue();
 
 #endif
