@@ -18,3 +18,7 @@ docker build -t windows_client  -f Dockerfile_for_Windows .
 
 # Запускаем контейнер
 docker run -it --rm windows_client
+
+
+# Компилируем клиент на виндовс
+gcc client.c -o client -lws2_32

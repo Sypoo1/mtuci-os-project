@@ -1,19 +1,23 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 #ifdef _WIN32
-    // Для Windows
+    // Windows-specific headers and settings
     #include <winsock2.h>
+    #include <ws2tcpip.h>  // Include this for addrinfo on Windows
     #include <windows.h>
     #pragma comment(lib, "ws2_32.lib")
+    #define close closesocket
+    typedef int socklen_t;
 #else
-    // Для Linux
-    #include <arpa/inet.h>
-    #include <errno.h>
-    #include <netdb.h>
-    #include <stdio.h>
-    #include <stdlib.h>
-    #include <string.h>
-    #include <sys/socket.h>
-    #include <sys/types.h>
+    // Linux-specific headers
     #include <unistd.h>
+    #include <sys/types.h>
+    #include <sys/socket.h>
+    #include <netdb.h>
+    #include <errno.h>
+    #include <arpa/inet.h>
 #endif
 
 #define S1_PORT 8001
@@ -21,27 +25,23 @@
 #define BS 4096
 
 #ifdef _WIN32
-    // Инициализация WinSock на Windows
-    int init_winsock() {
-        WSADATA wsaData;
-        return WSAStartup(MAKEWORD(2, 2), &wsaData);
-    }
+// Windows-specific initialization and cleanup
+int init_winsock() {
+    WSADATA wsaData;
+    return WSAStartup(MAKEWORD(2, 2), &wsaData);
+}
 
-    // Завершение работы с WinSock
-    void cleanup_winsock() {
-        WSACleanup();
-    }
-
-    // Сокет и другие операции специфичны для Windows
-    #define close closesocket
+void cleanup_winsock() {
+    WSACleanup();
+}
 #endif
 
-// Читает одну строку (до '\n') из сокета и печатает её
+// Function to read a greeting from the socket
 void read_greeting(int sd) {
     char buf[BS];
     size_t total = 0;
     ssize_t n;
-    while ((n = read(sd, buf + total, sizeof(buf) - total - 1)) > 0) {
+    while ((n = recv(sd, buf + total, sizeof(buf) - total - 1, 0)) > 0) {
         total += n;
         if (buf[total - 1] == '\n' || total >= sizeof(buf) - 1)
             break;
@@ -54,6 +54,7 @@ void read_greeting(int sd) {
     printf("%s", buf);
 }
 
+// Function to connect to a server
 int conn(const char *h, int p) {
     struct addrinfo hints, *res, *rp;
     char port_str[16];
@@ -62,7 +63,7 @@ int conn(const char *h, int p) {
     snprintf(port_str, sizeof(port_str), "%d", p);
 
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;       // Только IPv4
+    hints.ai_family = AF_INET;       // Only IPv4
     hints.ai_socktype = SOCK_STREAM; // TCP
 
     int err = getaddrinfo(h, port_str, &hints, &res);
@@ -77,7 +78,7 @@ int conn(const char *h, int p) {
             continue;
 
         if (connect(sd, rp->ai_addr, rp->ai_addrlen) != -1)
-            break; // Успешное подключение
+            break; // Successful connection
 
         close(sd);
         sd = -1;
@@ -92,6 +93,7 @@ int conn(const char *h, int p) {
     return sd;
 }
 
+// Function to close a socket
 void cl(int *s) {
     if (*s != -1) {
         close(*s);
@@ -99,6 +101,7 @@ void cl(int *s) {
     }
 }
 
+// Function to send a command to the server and print the response
 void cmd(int sd, const char *c) {
     if (sd < 0) {
         puts("Not connected");
@@ -107,15 +110,15 @@ void cmd(int sd, const char *c) {
 
     char buf[BS];
     int cmd_len = snprintf(buf, sizeof(buf), "%s\n", c);
-    if (write(sd, buf, cmd_len) != cmd_len) {
+    if (send(sd, buf, cmd_len, 0) != cmd_len) {
         perror("write");
         return;
     }
 
-    // читаем ответ до первой '\n'
+    // Read the response until the first '\n'
     size_t total = 0;
     ssize_t n;
-    while ((n = read(sd, buf + total, sizeof(buf) - total - 1)) > 0) {
+    while ((n = recv(sd, buf + total, sizeof(buf) - total - 1, 0)) > 0) {
         total += n;
         if (buf[total - 1] == '\n' || total >= sizeof(buf) - 1)
             break;
@@ -128,6 +131,7 @@ void cmd(int sd, const char *c) {
     printf("%s", buf);
 }
 
+// Function to display the menu
 void menu() {
     puts("\nMenu:");
     puts(" 1) Connect1");
@@ -144,7 +148,7 @@ void menu() {
 
 int main(int argc, char **argv) {
 #ifdef _WIN32
-    // Инициализация WinSock для Windows
+    // Initialize WinSock for Windows
     if (init_winsock() != 0) {
         printf("WSAStartup failed\n");
         return -1;
@@ -153,7 +157,7 @@ int main(int argc, char **argv) {
 
     const char *host = (argc > 1 ? argv[1] : "127.0.0.1");
 
-    printf("host=%s", host);
+    printf("host=%s\n", host);
     int s1 = -1, s2 = -1;
     char line[64];
 
@@ -218,7 +222,7 @@ int main(int argc, char **argv) {
             } else {
                 puts("Invalid input");
             }
-            // очистка stdin после scanf
+            // Clear stdin after scanf
             int ch;
             while ((ch = getchar()) != '\n' && ch != EOF)
                 ;
@@ -248,7 +252,7 @@ int main(int argc, char **argv) {
     cl(&s2);
 
 #ifdef _WIN32
-    // Завершение работы с WinSock для Windows
+    // Cleanup WinSock for Windows
     cleanup_winsock();
 #endif
 
