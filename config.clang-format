@@ -1,0 +1,6 @@
+BasedOnStyle: K&R
+IndentWidth: 4
+UseTab: Never
+BreakBeforeBraces: K&R
+AllowShortIfStatementsOnASingleLine: false
+IndentCaseLabels: false
