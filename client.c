@@ -81,7 +81,7 @@ void cmd(int sd, const char *c) {
 }
 
 void menu() {
-    puts("\nМеню:");
+    puts("Menu:");
     puts(" 1) Connect1");
     puts(" 2) Connect2");
     puts(" 3) Disconnect1");
