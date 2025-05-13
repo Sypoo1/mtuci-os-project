@@ -154,9 +154,9 @@ int server_loop(void) {
           "Bind Failed!");
     check(listen(server_socket, SERVERBACKLOG), "Listen Failed!");
     // printf("server_socket=%d\n",server_socket);
+    printf("Ready to accept connections!\n");
     while (true) {
 
-        printf("Waiting for connections...\n");
         // wait for, and eventually accept any incoming connections
         addr_size = sizeof(SA_IN);
         check(client_socket = accept(server_socket, (SA *)&client_addr,
