@@ -1,5 +1,20 @@
 # mtuci-os-project
 
 
+## Linux
 
-echo "test.txt" | nc 127.0.0.1 8001
+
+# Собираем образ
+docker build -t c-client .
+
+# Запускаем контейнер, пробрасывая хостовую сеть
+docker run -it --rm --network host c-client
+
+
+## Windows
+
+# Узнать адрес хоста из контейнера
+docker run --rm alpine sh -c "ping -c1 host.docker.internal"
+
+
+const char *host = (argc > 1 ? argv[1] : "host.docker.internal");

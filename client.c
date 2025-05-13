@@ -109,6 +109,9 @@ void menu() {
 
 int main(int argc, char **argv) {
     const char *host = (argc > 1 ? argv[1] : "127.0.0.1");
+    // const char *host = (argc > 1 ? argv[1] : "host.docker.internal"); // for docker + windows
+
+    printf("%s", host);
     int s1 = -1, s2 = -1;
     char line[64];
 
